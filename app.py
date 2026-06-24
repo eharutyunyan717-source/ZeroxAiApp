@@ -164,10 +164,20 @@ def get_api_keys():
 def as_messages(history, user_message):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for item in history[-24:]:
-        role = item.get("role")
-        content = item.get("content")
-        if role in {"user", "assistant"} and content:
-            messages.append({"role": role, "content": content})
+        if isinstance(item, dict):
+            role = item.get("role")
+            content = item.get("content")
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+            continue
+
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            user_text, assistant_text = item[0], item[1]
+            if user_text:
+                messages.append({"role": "user", "content": str(user_text)})
+            if assistant_text:
+                messages.append({"role": "assistant", "content": str(assistant_text)})
+
     messages.append({"role": "user", "content": user_message})
     return messages
 
@@ -195,6 +205,8 @@ def call_groq(messages):
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "ZeroxAI-HuggingFace-Space/1.0",
                 "Authorization": f"Bearer {api_key}",
             },
             method="POST",
@@ -208,6 +220,13 @@ def call_groq(messages):
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
             last_error = extract_error_message(detail) or f"API вернул статус {error.code}"
+            if "1010" in detail or "error code: 1010" in detail.lower():
+                last_error = (
+                    "Groq/Cloudflare заблокировал запрос с HuggingFace Space. "
+                    "Проверьте, что ключи Groq активны, и попробуйте перезапустить Space. "
+                    "Если ошибка останется, лучше подключить другой OpenAI-compatible endpoint."
+                )
+                break
             if error.code not in {401, 403, 408, 409, 429, 500, 502, 503, 504}:
                 break
         except Exception as error:
@@ -234,20 +253,43 @@ def extract_error_message(raw):
 
 def chat(message, history):
     if not message.strip():
-        return "Напишите сообщение, и ZeroxAI ответит."
-    return call_groq(as_messages(history, message.strip()))
+        return "", history
+    history = normalize_history(history)
+    answer = call_groq(as_messages(history, message.strip()))
+    history.append({"role": "user", "content": message.strip()})
+    history.append({"role": "assistant", "content": answer})
+    return "", history
 
 
-with gr.Blocks(
-    title="ZeroxAI",
-    css=CSS,
-    theme=gr.themes.Soft(
-        primary_hue="sky",
-        secondary_hue="blue",
-        neutral_hue="slate",
-        radius_size="lg",
-    ),
-) as demo:
+def normalize_history(history):
+    normalized = []
+    for item in history or []:
+        if isinstance(item, dict):
+            role = item.get("role")
+            content = item.get("content")
+            if role in {"user", "assistant"} and content is not None:
+                normalized.append({"role": role, "content": str(content)})
+            continue
+
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            user_text, assistant_text = item[0], item[1]
+            if user_text:
+                normalized.append({"role": "user", "content": str(user_text)})
+            if assistant_text:
+                normalized.append({"role": "assistant", "content": str(assistant_text)})
+
+    return normalized
+
+
+THEME = gr.themes.Soft(
+    primary_hue="sky",
+    secondary_hue="blue",
+    neutral_hue="slate",
+    radius_size="lg",
+)
+
+
+with gr.Blocks(title="ZeroxAI") as demo:
     gr.HTML(
         """
         <div class="zerox-hero">
@@ -260,29 +302,30 @@ with gr.Blocks(
         """
     )
 
-    gr.ChatInterface(
-        fn=chat,
-        type="messages",
-        chatbot=gr.Chatbot(
-            type="messages",
-            height=560,
-            show_copy_button=True,
-            avatar_images=(None, "assets/logo.svg"),
-        ),
-        textbox=gr.Textbox(
-            placeholder="Напишите сообщение ZeroxAI...",
-            lines=2,
-            max_lines=8,
-        ),
+    chatbot = gr.Chatbot(height=560)
+    textbox = gr.Textbox(
+        placeholder="Напишите сообщение ZeroxAI...",
+        lines=2,
+        max_lines=8,
+        label="Сообщение",
+    )
+    with gr.Row():
+        submit = gr.Button("Отправить", variant="primary")
+        clear = gr.Button("Очистить")
+
+    gr.Examples(
         examples=[
             "Кто твой создатель?",
             "Помоги написать Python-код для сайта",
             "Объясни простыми словами, что такое API",
         ],
-        submit_btn="Отправить",
-        stop_btn="Стоп",
+        inputs=textbox,
     )
+
+    textbox.submit(chat, [textbox, chatbot], [textbox, chatbot])
+    submit.click(chat, [textbox, chatbot], [textbox, chatbot])
+    clear.click(lambda: [], None, chatbot, queue=False)
 
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(css=CSS, theme=THEME)
