@@ -2,6 +2,7 @@ import io
 import json
 import os
 import psycopg2
+from psycopg2 import pool
 import random as _random
 import re
 import socket
@@ -235,7 +236,7 @@ def init_db():
         print("DATABASE_URL not set, database functions will be disabled.", file=sys.stderr)
         return
     try:
-        DB_POOL = psycopg2.pool.SimpleConnectionPool(1, 5, dsn=db_url)
+        DB_POOL = pool.SimpleConnectionPool(1, 5, dsn=db_url)
         with db_cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -2073,7 +2074,7 @@ def set_webhook(token):
     webhook_url = ""
     if os.getenv("FLY_APP_NAME"):
         webhook_url = f"https://{os.getenv('FLY_APP_NAME')}.fly.dev/webhook/{token}"
-    elif os.getenv("RAILWAY_PUBLIC_DOMAIN"):
+    elif os.getenv("RAILWAY_STATIC_URL"): # RAILWAY_STATIC_URL is more reliable
         webhook_url = f"https://{os.getenv('RAILWAY_PUBLIC_DOMAIN')}/webhook/{token}"
     elif os.getenv("RENDER_EXTERNAL_URL"):
         webhook_url = f"{os.getenv('RENDER_EXTERNAL_URL')}/webhook/{token}"
