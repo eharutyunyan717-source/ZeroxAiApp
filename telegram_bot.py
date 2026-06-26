@@ -2067,6 +2067,19 @@ def main():
 
     while True:
         try:
+            bot_info = telegram_request(token, "getMe")
+            if bot_info and "result" in bot_info:
+                BOT_ID = bot_info.get("result", {}).get("id")
+                BOT_USERNAME = bot_info.get("result", {}).get("username", "")
+                print(f"ZeroxAI Telegram bot is running. @{BOT_USERNAME} (id={BOT_ID})", flush=True)
+                break
+        except Exception as e:
+            print(f"Failed to connect to Telegram API: {e}, retrying in 10s...")
+        time.sleep(10)
+
+
+    while True:
+        try:
             if set_webhook(token):
                 port = int(os.getenv("PORT", "8080"))
                 server = ThreadingHTTPServer(("0.0.0.0", port), webhook_handler_factory(token))
@@ -2083,19 +2096,6 @@ def main():
 
 def _run_polling_bot(token):
     global BOT_ID, BOT_USERNAME
-
-    while True:
-        try:
-            bot_info = telegram_request(token, "getMe")
-            if bot_info and "result" in bot_info:
-                break
-        except Exception as e:
-            print(f"Failed to connect to Telegram API: {e}, retrying in 10s...")
-        time.sleep(10)
-
-    BOT_ID = bot_info.get("result", {}).get("id")
-    BOT_USERNAME = bot_info.get("result", {}).get("username", "")
-    print(f"ZeroxAI Telegram bot is running. @{BOT_USERNAME} (id={BOT_ID})", flush=True)
 
     offset = 0
 
