@@ -923,15 +923,22 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
 
             if cmd == "/statbot":
-                total_users = len(BOT_DATA.get("balances", {}))
-                total_coins = sum(BOT_DATA.get("balances", {}).values())
+                total_users = 0
+                total_coins = 0
+                try:
+                    with db_cursor() as cur:
+                        cur.execute("SELECT COUNT(*), SUM(balance) FROM users WHERE balance > 0")
+                        total_users, total_coins = cur.fetchone()
+                except Exception as e:
+                    print(f"Failed to get bot stats from DB: {e}", file=sys.stderr)
+
                 chats = set()
                 for k in USER_HISTORIES:
                     chats.add(k)
                 reply(
                     f"\U0001F4CA Статистика:\n"
-                    f"Пользователей с балансом: {total_users}\n"
-                    f"Всего монет в обращении: {total_coins}\n"
+                    f"Пользователей с балансом: {total_users or 0}\n"
+                    f"Всего монет в обращении: {total_coins or 0}\n"
                     f"Активных чатов: {len(chats)}\n"
                     f"Казино: {'✅' if not BOT_DATA.get('casino_disabled') else '⛔'}"
                 )
