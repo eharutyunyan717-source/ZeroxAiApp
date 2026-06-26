@@ -391,9 +391,10 @@ def get_api_keys():
 
 def load_data():
     """Loads non-user, non-balance data from the database into memory."""
+    global BOT_DATA
     if not DB_POOL:
         print("DB not available, skipping data load.", file=sys.stderr)
-        BOT_DATA = {"chats": {}}
+        BOT_DATA["chats"] = {}
         return
 
     try:
