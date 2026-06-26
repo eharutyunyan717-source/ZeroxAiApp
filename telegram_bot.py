@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import psycopg2
 import random as _random
 import re
 import socket
@@ -13,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 import urllib.parse
+from psycopg2 import pool
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -151,6 +153,7 @@ load_dotenv()
 
 
 TELEGRAM_BASE_URL = "https://dry-water-835f.eharutyunyan580.workers.dev"
+DB_POOL = None
 
 WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN")
 STARTING_BALANCE = 500
@@ -159,48 +162,64 @@ PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500}
 
 
 def get_balance(user_id):
-    if "balances" not in BOT_DATA:
-        BOT_DATA["balances"] = {}
-    return BOT_DATA["balances"].get(str(user_id), 0)
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
+            result = cur.fetchone()
+            return result[0] if result else 0
+    except Exception:
+        return 0
 
 def set_balance(user_id, amount):
-    BOT_DATA.setdefault("balances", {})[str(user_id)] = amount
-    save_data()
+    try:
+        with db_cursor() as cur:
+            cur.execute("INSERT INTO users (user_id, balance) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET balance = %s",
+                        (user_id, amount, amount))
+    except Exception as e:
+        print(f"Failed to set balance for {user_id}: {e}", file=sys.stderr)
 
 def add_balance(user_id, amount):
     bal = get_balance(user_id) + amount
     set_balance(user_id, bal)
     return bal
 
-def get_claim(user_id):
-    return BOT_DATA.get("claims", {}).get(str(user_id), {})
-
+def get_claim(user_id, claim_type):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT claim_time FROM claims WHERE user_id = %s AND claim_type = %s", (user_id, claim_type))
+            result = cur.fetchone()
+            return {"time": result[0].timestamp()} if result else {}
+    except Exception:
+        return {}
 
 def set_claim(user_id, claim_type):
-    BOT_DATA.setdefault("claims", {})[str(user_id)] = {"type": claim_type, "time": time.time()}
-    save_data()
-
-
-def get_promo_state(user_id):
-    return BOT_DATA.setdefault("promo_redemptions", {}).get(str(user_id), {})
-
+    try:
+        with db_cursor() as cur:
+            cur.execute("INSERT INTO claims (user_id, claim_type) VALUES (%s, %s) ON CONFLICT (user_id, claim_type) DO UPDATE SET claim_time = NOW()",
+                        (user_id, claim_type))
+    except Exception as e:
+        print(f"Failed to set claim for {user_id}: {e}", file=sys.stderr)
 
 def redeem_promo(user_id, code):
     normalized = code.strip().lower()
     if normalized not in PROMO_REWARDS:
         return False, "Неверный промокод."
-    user_promos = BOT_DATA.setdefault("promo_redemptions", {}).setdefault(str(user_id), {})
-    if normalized in user_promos:
-        return False, "Вы уже активировали этот промокод."
-    user_promos[normalized] = time.time()
-    add_balance(user_id, PROMO_REWARDS[normalized])
-    save_data()
-    return True, PROMO_REWARDS[normalized]
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT 1 FROM claims WHERE user_id = %s AND claim_type = %s", (user_id, f"promo_{normalized}"))
+            if cur.fetchone():
+                return False, "Вы уже активировали этот промокод."
+            cur.execute("INSERT INTO claims (user_id, claim_type) VALUES (%s, %s)", (user_id, f"promo_{normalized}"))
+            reward = PROMO_REWARDS[normalized]
+            add_balance(user_id, reward)
+            return True, reward
+    except Exception as e:
+        return False, f"Ошибка базы данных: {e}"
 
 
 def can_claim_free(user_id):
-    claim = get_claim(user_id)
-    if not claim or claim.get("type") != "free":
+    claim = get_claim(user_id, "free")
+    if not claim:
         return True, None
     elapsed = time.time() - claim.get("time", 0)
     if elapsed < FREE_COOLDOWN_SECONDS:
@@ -209,6 +228,63 @@ def can_claim_free(user_id):
         minutes = (remaining % 3600) // 60
         return False, f"Следующий бонус доступен через {hours}ч {minutes}м."
     return True, None
+
+def init_db():
+    global DB_POOL
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        print("DATABASE_URL not set, database functions will be disabled.", file=sys.stderr)
+        return
+    try:
+        DB_POOL = pool.SimpleConnectionPool(1, 5, dsn=db_url)
+        with db_cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    balance BIGINT NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS claims (
+                    user_id BIGINT,
+                    claim_type VARCHAR(255),
+                    claim_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, claim_type)
+                );
+                CREATE TABLE IF NOT EXISTS chat_data (
+                    chat_id BIGINT PRIMARY KEY,
+                    data JSONB NOT NULL
+                );
+            """)
+        print("Database initialized successfully.", flush=True)
+    except Exception as e:
+        print(f"Failed to initialize database: {e}", file=sys.stderr)
+        DB_POOL = None
+
+class db_cursor:
+    def __enter__(self):
+        if not DB_POOL:
+            raise RuntimeError("Database is not available.")
+        self.conn = DB_POOL.getconn()
+        self.cur = self.conn.cursor()
+        return self.cur
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            self.conn.rollback()
+        else:
+            self.conn.commit()
+        self.cur.close()
+        DB_POOL.putconn(self.conn)
+
+def save_data():
+    # This function is now only for chat-specific data like roles
+    if not DB_POOL: return
+    try:
+        with db_cursor() as cur:
+            for chat_id, data in BOT_DATA.get("chats", {}).items():
+                cur.execute("INSERT INTO chat_data (chat_id, data) VALUES (%s, %s) ON CONFLICT (chat_id) DO UPDATE SET data = %s",
+                            (chat_id, json.dumps(data), json.dumps(data)))
+    except Exception as e:
+        print(f"Failed to save chat_data: {e}", file=sys.stderr)
 
 SSL_CONTEXT = ssl.create_default_context()
 SSL_CONTEXT.check_hostname = False
@@ -313,28 +389,26 @@ def get_api_keys():
     return [key.strip() for key in re.split(r"[,|\n]+", raw_keys) if key.strip()]
 
 
-def ensure_data_file_path():
-    directory = os.path.dirname(DATA_FILE) or "."
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-
-
 def load_data():
-    global BOT_DATA
-    ensure_data_file_path()
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            BOT_DATA = json.load(f)
-    except Exception:
+    """Loads non-user, non-balance data from the database into memory."""
+    if not DB_POOL:
+        print("DB not available, skipping data load.", file=sys.stderr)
         BOT_DATA = {"chats": {}}
-    if "chats" not in BOT_DATA:
+        return
+
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT chat_id, data FROM chat_data")
+            rows = cur.fetchall()
+            # Reset in-memory data before loading
+            BOT_DATA["chats"] = {}
+            for chat_id, data in rows:
+                BOT_DATA["chats"][str(chat_id)] = data
+            print(f"Loaded data for {len(rows)} chats from DB.", flush=True)
+    except Exception as e:
+        print(f"Failed to load chat data from DB: {e}", file=sys.stderr)
+        # Ensure chats key exists even on failure
         BOT_DATA["chats"] = {}
-
-
-def save_data():
-    ensure_data_file_path()
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(BOT_DATA, f, indent=2, ensure_ascii=False)
 
 
 def get_chat_data(chat_id):
@@ -1186,9 +1260,9 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
 
         # --- Economy ---
         if cmd == "/free":
-            claim = get_claim(user_id)
-            if claim:
-                reply(f"\u26A0\uFE0F Вы уже получали бонус. Ваш баланс: {get_balance(user_id)} монет.")
+            can_claim, reason = can_claim_free(user_id)
+            if not can_claim:
+                reply(f"⏳ {reason}")
                 return True
             add_balance(user_id, STARTING_BALANCE)
             set_claim(user_id, "free")
@@ -2061,6 +2135,7 @@ def main():
 
     signal.signal(signal.SIGTERM, signal_handler)
 
+    init_db()
     load_data()
 
     token = get_env("TELEGRAM_BOT_TOKEN")
