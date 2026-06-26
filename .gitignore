@@ -1,0 +1,18 @@
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables
+.env
+.env.*
+
+# Data files
+data.json
+*.db
+*.sqlite3
+
+# IDE/Editor specific
+.idea/
+.vscode/
