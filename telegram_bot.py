@@ -291,6 +291,18 @@ def init_db():
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS luck INT NOT NULL DEFAULT 0")
         except Exception:
             pass
+        # add items column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS items JSONB")
+        except Exception:
+            pass
+        # add items column if missing (migration) - this was a typo in the original, fixing it to be correct
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS items JSONB")
+        except Exception:
+            pass
         print("Database initialized successfully.", flush=True)
     except Exception as e:
         print(f"Failed to initialize database: {e}", file=sys.stderr)
@@ -359,6 +371,28 @@ def set_luck(user_id, value):
     except Exception as e:
         print(f"set_luck({user_id}) error: {e}", file=sys.stderr)
 
+def get_user_items(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT items FROM users WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return json.loads(row[0]) if row and row[0] else {}
+    except Exception:
+        return {}
+
+def set_user_items(user_id, items):
+    try:
+        with db_cursor() as cur:
+            cur.execute("UPDATE users SET items = %s WHERE user_id = %s", (json.dumps(items), user_id))
+    except Exception as e:
+        print(f"set_user_items({user_id}) error: {e}", file=sys.stderr)
+
+def has_active_item(user_id, item_key):
+    items = get_user_items(user_id)
+    item = items.get(item_key)
+    if not item: return False
+    return time.time() < item.get("expires_at", 0)
+
 def short_num(n):
     if n >= 1000000000:
         return f"{n/1000000000:.1f}B"
@@ -370,6 +404,14 @@ def short_num(n):
 
 def fmt_coin(n):
     return f"{n:,} ({short_num(n)})"
+
+SHOP_ITEMS = {
+    "luck_boost_10": {"name": "🍀 Удача +10%", "price": 5000, "duration_hours": 1, "description": "Увеличивает вашу удачу на 10% на 1 час."},
+    "luck_boost_25": {"name": "🍀🍀 Удача +25%", "price": 12000, "duration_hours": 1, "description": "Увеличивает вашу удачу на 25% на 1 час."},
+    "vip_status": {"name": "💎 VIP Статус", "price": 100000, "duration_hours": 24 * 7, "description": "Отображает 💎 рядом с вашим именем в /bal на 7 дней."},
+    "rich_status": {"name": "💰 Богач", "price": 1000000, "duration_hours": 24 * 30, "description": "Отображает 💰 рядом с вашим именем в /bal на 30 дней."},
+}
+
 
 FREE_TOKEN_LIMIT = 2000
 PRO_TOKEN_LIMIT = 10000
@@ -1130,7 +1172,7 @@ KNOWN_COMMANDS = {
     "/mute", "/unmute", "/kick", "/ban", "/unban",
     "/role", "/setrules",
     "/ticket", "/closeticket", "/feedback", "/announce", "/userinfo", "/support",
-    "/clean", "/pin", "/unpin", "/slowmode", "/say", "/welcome", "/delete", "/banlist",
+    "/clean", "/pin", "/unpin", "/slowmode", "/say", "/welcome", "/delete", "/banlist", "/shop",
     "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme",
     "/free", "/promo", "/bal", "/balance", "/slot", "/allin",
     "/transfer", "/give", "/send",
@@ -1612,6 +1654,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                      "/choose A | B — выбор",
                      "/8ball — шар судьбы",
                      "/hug — обнять",
+                     "/shop — магазин предметов",
                      "/slap — шлёпнуть",
                      "/quote — цитата",
                      "/meme — мем",
@@ -1803,7 +1846,13 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             return True
 
         if cmd in ("/bal", "/balance"):
-            reply(f"\U0001F4B0 Ваш баланс: {fmt_coin(get_balance(user_id))} монет.")
+            balance = get_balance(user_id)
+            status_icon = ""
+            if has_active_item(user_id, "vip_status"):
+                status_icon = "💎 "
+            elif has_active_item(user_id, "rich_status"):
+                status_icon = "💰 "
+            reply(f"{status_icon}\U0001F4B0 Ваш баланс: {fmt_coin(balance)} монет.")
             return True
 
         if cmd in ("/transfer", "/give", "/send"):
@@ -1940,7 +1989,10 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             _SLOT_SYMS = ["\u25AC", "\U0001F347", "\U0001F34B", "7\uFE0F\u20E3"]
             idx = dice_value - 1
             # apply luck
-            luck = get_luck(user_id)
+            base_luck = get_luck(user_id)
+            luck_boost = 10 if has_active_item(user_id, "luck_boost_10") else 0
+            luck_boost = 25 if has_active_item(user_id, "luck_boost_25") else luck_boost
+            luck = base_luck + luck_boost
             if luck > 0:
                 if _random.randint(1, 100) <= luck // 2:
                     # force jackpot
@@ -1989,6 +2041,42 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
                 )
             reply(result, "HTML")
+            return True
+
+        if cmd == "/shop":
+            if not args:
+                lines = ["\U0001F3EA <b>Магазин предметов</b>\n", "Используйте <code>/shop buy &lt;id&gt;</code> для покупки.\n"]
+                for item_id, item in SHOP_ITEMS.items():
+                    lines.append(f"<b>{item['name']}</b> (ID: <code>{item_id}</code>)")
+                    lines.append(f"Цена: {fmt_coin(item['price'])} | {item['description']}\n")
+                reply("\n".join(lines), "HTML")
+                return True
+
+            if args[0].lower() == "buy" and len(args) > 1:
+                item_id = args[1].lower()
+                item = SHOP_ITEMS.get(item_id)
+                if not item:
+                    reply("❌ Такого предмета нет в магазине.")
+                    return True
+
+                balance = get_balance(user_id)
+                if balance < item['price']:
+                    reply(f"❌ Недостаточно монет. Нужно {fmt_coin(item['price'])}, у вас {fmt_coin(balance)}.")
+                    return True
+
+                if has_active_item(user_id, item_id):
+                    reply("❌ У вас уже есть этот предмет.")
+                    return True
+
+                add_balance(user_id, -item['price'])
+                user_items = get_user_items(user_id)
+                user_items[item_id] = {
+                    "purchased_at": time.time(),
+                    "expires_at": time.time() + item['duration_hours'] * 3600
+                }
+                set_user_items(user_id, user_items)
+                reply(f"✅ Вы успешно купили «{item['name']}»! Ваш баланс: {fmt_coin(get_balance(user_id))}.")
+                return True
             return True
 
         if cmd == "/ben":
@@ -2829,3 +2917,4 @@ def _run_polling_bot(token):
 
 if __name__ == "__main__":
     main()
+как

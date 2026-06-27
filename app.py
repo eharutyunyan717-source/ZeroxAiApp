@@ -342,15 +342,9 @@ with gr.Blocks(title="ZeroxAI") as demo:
 
 
 if __name__ == "__main__":
-    import subprocess
-    import sys
-
-    def _run_bot():
-        while True:
-            proc = subprocess.Popen([sys.executable, "telegram_bot.py"])
-            proc.wait()
-            time.sleep(3)
-
-    t = threading.Thread(target=_run_bot, daemon=True)
+    # Вместо subprocess используем прямой импорт и запуск в потоке
+    # Это более надежно для деплоя на платформах вроде Railway
+    import telegram_bot
+    t = threading.Thread(target=telegram_bot.main, daemon=True)
     t.start()
     demo.launch(css=CSS, theme=THEME)
