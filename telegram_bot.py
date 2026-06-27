@@ -2814,10 +2814,12 @@ def handle_message(token, message):
     if BOT_DATA.get("bot_stopped") and user_id != 6734685656:
         return
 
+    if not user.get("is_bot"):
+        increment_message_count(user_id)
+
     if not should_respond(message):
         return
 
-    increment_message_count(user_id)
     text = strip_mention(text)
     is_group = chat.get("type") != "private"
 
