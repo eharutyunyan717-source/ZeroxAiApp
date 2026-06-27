@@ -876,7 +876,7 @@ KNOWN_COMMANDS = {
     "/transfer", "/give", "/send",
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
-    "/server", "/addsticker",
+    "/server", "/addsticker", "/mypro", "/buypro",
 }
 
 def should_respond(message):
@@ -1552,33 +1552,14 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if r1 == r2 == r3:
                 payout = bet * 10
                 add_balance(user_id, payout)
-                outcome = "ДЖЕКПОТ"
-                desc = f"три совпадения! {r1}{r2}{r3} Выигрыш x10 = +{payout}"
+                result = f"\U0001F3C6 <b>ДЖЕКПОТ!</b> {r1}{r2}{r3} x10 = +{payout}\n\u26A1 Баланс: {get_balance(user_id)}"
             elif r1 == r2 or r2 == r3 or r1 == r3:
                 payout = bet * 2
                 add_balance(user_id, payout)
-                outcome = "ВЫИГРЫШ"
-                desc = f"два совпадения! {r1} {r2} {r3} Выигрыш x2 = +{payout}"
+                result = f"\u2705 <b>ВЫИГРЫШ</b> {r1} {r2} {r3} x2 = +{payout}\n\u26A1 Баланс: {get_balance(user_id)}"
             else:
                 add_balance(user_id, -bet)
-                outcome = "ПРОИГРЫШ"
-                desc = f"нет совпадений: {r1} {r2} {r3} Проиграно {bet}"
-            import html as _html
-            name = user.get("first_name", f"ID {user_id}")
-            ai_text = call_ai([{
-                "role": "system",
-                "content": "Ты ведущий казино. Пиши кратко, 1 предложение, элегантно. Без HTML, без звёздочек. Обратись к игроку по имени, упомяни комбинацию и сумму. Минимум эмодзи.",
-            }, {
-                "role": "user",
-                "content": f"Игрок {name} поставил {bet} монет на слот.\nВыпало: {r1} {r2} {r3}\nРезультат: {outcome}! {desc}",
-            }], user_id)
-            if ai_text and "Не удалось" not in ai_text and "Ошибка" not in ai_text:
-                clean = _html.escape(ai_text)
-                line = clean.replace(outcome, f"<b>{outcome}</b>")
-                line = re.sub(r"([+-]\d+)", r"<b>\1</b>", line)
-            else:
-                line = f"<b>{outcome}!</b> {_html.escape(desc)}"
-            result = f"{line}\n\n\u26A1 Баланс: {get_balance(user_id)}"
+                result = f"\u274C <b>ПРОИГРЫШ</b> {r1} {r2} {r3} -{bet}\n\u26A1 Баланс: {get_balance(user_id)}"
             reply(result, "HTML")
             return True
 
