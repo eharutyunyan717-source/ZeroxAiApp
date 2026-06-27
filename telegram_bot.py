@@ -270,9 +270,16 @@ def init_db():
                 );
                 CREATE TABLE IF NOT EXISTS pro_users (
                     user_id BIGINT PRIMARY KEY,
-                    purchased_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    purchased_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '30 days'
                 );
             """)
+        # add expires_at column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE pro_users ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '30 days'")
+        except Exception:
+            pass
         print("Database initialized successfully.", flush=True)
     except Exception as e:
         print(f"Failed to initialize database: {e}", file=sys.stderr)
@@ -301,10 +308,19 @@ class db_cursor:
         self.cur.close()
         DB_POOL.putconn(self.conn)
 
+def pro_days_left(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT EXTRACT(EPOCH FROM expires_at - NOW()) / 86400 FROM pro_users WHERE user_id = %s AND expires_at > NOW()", (user_id,))
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
 def is_pro_user(user_id):
     try:
         with db_cursor() as cur:
-            cur.execute("SELECT 1 FROM pro_users WHERE user_id = %s", (user_id,))
+            cur.execute("SELECT expires_at FROM pro_users WHERE user_id = %s AND expires_at > NOW()", (user_id,))
             return cur.fetchone() is not None
     except Exception:
         return False
@@ -312,7 +328,7 @@ def is_pro_user(user_id):
 def add_pro_user(user_id):
     try:
         with db_cursor() as cur:
-            cur.execute("INSERT INTO pro_users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (user_id,))
+            cur.execute("INSERT INTO pro_users (user_id, expires_at) VALUES (%s, NOW() + INTERVAL '30 days') ON CONFLICT (user_id) DO UPDATE SET expires_at = NOW() + INTERVAL '30 days'", (user_id,))
     except Exception as e:
         print(f"add_pro_user({user_id}) error: {e}", file=sys.stderr)
 
@@ -864,7 +880,7 @@ def handle_callback_query(token, callback_query):
 
     if data == "menu_pro":
         if is_pro_user(user_id):
-            text = "\u2B50\uFE0F У вас активна Pro-подписка! Используется Groq AI (openai/gpt-oss-120b)."
+            text = "\u2B50\uFE0F У вас активна Pro-подписка! Осталось {} дн.".format(pro_days_left(user_id)) + "\nИспользуется Groq AI (openai/gpt-oss-120b)."
         else:
             text = "\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\nКупите Pro: /buypro"
         telegram_request(token, "editMessageText", {
@@ -1211,7 +1227,8 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
 
         if cmd == "/mypro":
             if is_pro_user(user_id):
-                reply("\u2B50\uFE0F У вас активна Pro-подписка! Используется Groq AI (openai/gpt-oss-120b).")
+                days = pro_days_left(user_id)
+                reply(f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется Groq AI (openai/gpt-oss-120b).")
             else:
                 reply("\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\n"
                       "Купите Pro: /buypro")
@@ -1229,7 +1246,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     "\u2714\uFE0F Доступ к мощной модели Groq AI (openai/gpt-oss-120b)\n"
                     "\u2714\uFE0F Более умные и развёрнутые ответы\n"
                     "\u2714\uFE0F Приоритетная обработка запросов\n"
-                    "\u2714\uFE0F Безлимитно навсегда — никакой ежемесячной платы"
+                    "\u2714\uFE0F На 30 дней — продлевается раз в месяц"
                 ),
                 "payload": f"pro_{user_id}",
                 "provider_token": "",
@@ -2340,8 +2357,9 @@ def handle_message(token, message):
     if text in ("\u2B50 Подписка", "\U0001F916 Токены"):
         if text == "\u2B50 Подписка":
             if is_pro_user(user_id):
+                days = pro_days_left(user_id)
                 reply_message(token, chat_id,
-                    "\u2B50\uFE0F У вас активна Pro-подписка! Используется Groq AI (openai/gpt-oss-120b).", None, reply_markup=km)
+                    f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется Groq AI (openai/gpt-oss-120b).", None, reply_markup=km)
             else:
                 reply_message(token, chat_id,
                     "\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\nКупите Pro: /buypro", None, reply_markup=km)
