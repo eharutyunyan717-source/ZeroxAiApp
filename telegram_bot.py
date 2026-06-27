@@ -171,7 +171,40 @@ DB_POOL = None
 WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN")
 STARTING_BALANCE = 500
 FREE_COOLDOWN_SECONDS = 12 * 60 * 60
+MAX_TRANSFER_AMOUNT = 10_000_000_000
+MAX_BALANCE = 10_000_000_000_000
 PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500, "topaichatmeneger2026": 0}
+
+
+def parse_transfer_input(args, message):
+    reply_msg = message.get("reply_to_message")
+    if reply_msg:
+        target_ref = reply_msg.get("from", {}).get("id")
+        if not target_ref:
+            return None, None
+        for arg in args:
+            if arg.lstrip("-").isdigit():
+                amount = int(arg)
+                return target_ref, amount
+        return target_ref, None
+
+    if len(args) < 2:
+        return None, None
+
+    target_arg = args[0].strip()
+    if target_arg.isdigit():
+        target_ref = int(target_arg)
+    elif target_arg.startswith("@"):
+        target_ref = target_arg
+    else:
+        return None, None
+
+    for arg in args[1:]:
+        if arg.lstrip("-").isdigit():
+            amount = int(arg)
+            return target_ref, amount
+
+    return target_ref, None
 
 
 def get_balance(user_id):
@@ -185,6 +218,11 @@ def get_balance(user_id):
         return 0
 
 def set_balance(user_id, amount):
+    amount = int(amount)
+    if amount < 0:
+        amount = 0
+    if amount > MAX_BALANCE:
+        amount = MAX_BALANCE
     try:
         with db_cursor() as cur:
             cur.execute("INSERT INTO users (user_id, balance) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET balance = %s",
@@ -405,11 +443,48 @@ def short_num(n):
 def fmt_coin(n):
     return f"{n:,} ({short_num(n)})"
 
+
+def format_duration(hours):
+    if hours <= 0:
+        return "сейчас"
+    days = hours // 24
+    rem_hours = hours % 24
+    if days and rem_hours:
+        return f"{days} {'день' if days == 1 else 'дня' if days < 5 else 'дней'} {rem_hours} ч"
+    if days:
+        return f"{days} {'день' if days == 1 else 'дня' if days < 5 else 'дней'}"
+    return f"{hours} {'час' if hours == 1 else 'часа' if hours < 5 else 'часов'}"
+
+
+def get_shop_status_text(user_id, item_id):
+    items = get_user_items(user_id)
+    item = items.get(item_id)
+    if not item:
+        return "Доступно"
+    if time.time() < item.get("expires_at", 0):
+        remaining = int(item.get("expires_at", 0) - time.time())
+        return f"Активно · ещё {format_duration(remaining // 3600)}"
+    return "Просрочено"
+
+
+def format_shop_item_block(item_id, item, status_text):
+    badge = item.get("badge", "✨")
+    duration = format_duration(item.get("duration_hours", 0))
+    return (
+        f"<b>{badge} {item['name']}</b>\n"
+        f"ID: <code>{item_id}</code>\n"
+        f"Цена: <code>{fmt_coin(item['price'])}</code>\n"
+        f"Срок: <code>{duration}</code>\n"
+        f"Эффект: {item['description']}\n"
+        f"Статус: <i>{status_text}</i>"
+    )
+
+
 SHOP_ITEMS = {
-    "luck_boost_10": {"name": "🍀 Удача +10%", "price": 5000, "duration_hours": 1, "description": "Увеличивает вашу удачу на 10% на 1 час."},
-    "luck_boost_25": {"name": "🍀🍀 Удача +25%", "price": 12000, "duration_hours": 1, "description": "Увеличивает вашу удачу на 25% на 1 час."},
-    "vip_status": {"name": "💎 VIP Статус", "price": 100000, "duration_hours": 24 * 7, "description": "Отображает 💎 рядом с вашим именем в /bal на 7 дней."},
-    "rich_status": {"name": "💰 Богач", "price": 1000000, "duration_hours": 24 * 30, "description": "Отображает 💰 рядом с вашим именем в /bal на 30 дней."},
+    "luck_boost_10": {"name": "🍀 Удача +10%", "price": 5000, "duration_hours": 1, "description": "Увеличивает вашу удачу на 10% на 1 час.", "badge": "🍀"},
+    "luck_boost_25": {"name": "🍀🍀 Удача +25%", "price": 12000, "duration_hours": 1, "description": "Увеличивает вашу удачу на 25% на 1 час.", "badge": "🍀"},
+    "vip_status": {"name": "💎 VIP-статус", "price": 100000, "duration_hours": 24 * 7, "description": "Показывает значок 💎 рядом с балансом на 7 дней.", "badge": "💎"},
+    "rich_status": {"name": "💰 Богач", "price": 1000000, "duration_hours": 24 * 30, "description": "Показывает значок 💰 рядом с балансом на 30 дней.", "badge": "💰"},
 }
 
 
@@ -779,7 +854,7 @@ def get_user_display(user):
     return f"{name} (@{uname})" if uname else name
 
 
-def format_duration(minutes):
+def format_minutes_duration(minutes):
     if minutes < 60:
         return f"{minutes} мин"
     hours = minutes // 60
@@ -1856,17 +1931,18 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             return True
 
         if cmd in ("/transfer", "/give", "/send"):
-            target_ref = parse_user_ref(message, args)
+            target_ref, amount = parse_transfer_input(args, message)
             if not target_ref:
                 reply("Ответьте на сообщение получателя: /transfer <сумма>\nИли укажите ID: /transfer <id> <сумма>")
                 return True
-            try:
-                amount = int([a for a in args if a.lstrip("-").isdigit()][-1])
-            except (IndexError, ValueError):
-                reply("Укажите сумму. Пример: /transfer @username 100")
+            if amount is None:
+                reply("Укажите сумму. Пример: /transfer <id> 100")
                 return True
             if amount <= 0:
                 reply("Сумма должна быть положительной.")
+                return True
+            if amount > MAX_TRANSFER_AMOUNT:
+                reply(f"⚠️ Сумма слишком большая. Максимум: {fmt_coin(MAX_TRANSFER_AMOUNT)}")
                 return True
             tid = None
             if isinstance(target_ref, int):
@@ -2045,10 +2121,10 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
 
         if cmd == "/shop":
             if not args:
-                lines = ["\U0001F3EA <b>Магазин предметов</b>\n", "Используйте <code>/shop buy &lt;id&gt;</code> для покупки.\n"]
+                lines = ["🏪 <b>Магазин привилегий</b>", "Используйте <code>/shop buy &lt;id&gt;</code> для покупки.", ""]
                 for item_id, item in SHOP_ITEMS.items():
-                    lines.append(f"<b>{item['name']}</b> (ID: <code>{item_id}</code>)")
-                    lines.append(f"Цена: {fmt_coin(item['price'])} | {item['description']}\n")
+                    lines.append(format_shop_item_block(item_id, item, get_shop_status_text(user_id, item_id)))
+                    lines.append("")
                 reply("\n".join(lines), "HTML")
                 return True
 
@@ -2065,7 +2141,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     return True
 
                 if has_active_item(user_id, item_id):
-                    reply("❌ У вас уже есть этот предмет.")
+                    reply(f"❌ У вас уже активен этот предмет: <b>{item['name']}</b>.", "HTML")
                     return True
 
                 add_balance(user_id, -item['price'])
@@ -2075,7 +2151,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     "expires_at": time.time() + item['duration_hours'] * 3600
                 }
                 set_user_items(user_id, user_items)
-                reply(f"✅ Вы успешно купили «{item['name']}»! Ваш баланс: {fmt_coin(get_balance(user_id))}.")
+                reply(f"✅ Вы успешно купили <b>{item['name']}</b>!\nСрок действия: {format_duration(item['duration_hours'])}.\nБаланс: {fmt_coin(get_balance(user_id))}.", "HTML")
                 return True
             return True
 
@@ -2201,7 +2277,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 cd.setdefault("muted", {})
                 cd["muted"][str(target)] = until
                 save_data()
-                reply(f"\U0001F507 {target} заглушён на {format_duration(minutes)}.")
+                reply(f"\U0001F507 {target} заглушён на {format_minutes_duration(minutes)}.")
             except Exception as e:
                 reply(f"\u274C Ошибка: {e}")
             return True
@@ -2917,4 +2993,3 @@ def _run_polling_bot(token):
 
 if __name__ == "__main__":
     main()
-как
