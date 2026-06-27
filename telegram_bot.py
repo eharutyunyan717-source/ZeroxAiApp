@@ -26,6 +26,7 @@ MAX_TELEGRAM_MESSAGE = 3900
 DATA_FILE = os.environ.get("DATA_PATH") or ("/data/data.json" if os.path.exists("/data") else "data.json")
 
 ACTIVE_KEY_INDEX = 0
+TOKEN_LIMIT = 100000
 USER_HISTORIES = {}
 BOT_ID = None
 BOT_USERNAME = None
@@ -254,6 +255,10 @@ def init_db():
                     chat_id BIGINT PRIMARY KEY,
                     data JSONB NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS pro_users (
+                    user_id BIGINT PRIMARY KEY,
+                    purchased_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
             """)
         print("Database initialized successfully.", flush=True)
     except Exception as e:
@@ -282,6 +287,64 @@ class db_cursor:
             self.conn.commit()
         self.cur.close()
         DB_POOL.putconn(self.conn)
+
+def is_pro_user(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT 1 FROM pro_users WHERE user_id = %s", (user_id,))
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+def add_pro_user(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("INSERT INTO pro_users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (user_id,))
+    except Exception as e:
+        print(f"add_pro_user({user_id}) error: {e}", file=sys.stderr)
+
+def call_ai(messages, user_id):
+    if is_pro_user(user_id):
+        return call_groq(messages)
+    return call_gemini(messages)
+
+def call_gemini(messages):
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return "Gemini API key not configured. Ask the admin to set GEMINI_API_KEY."
+    try:
+        system_prompt = ""
+        gemini_contents = []
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "system":
+                system_prompt = content
+            else:
+                gemini_role = "model" if role == "assistant" else "user"
+                gemini_contents.append({"role": gemini_role, "parts": [{"text": content}]})
+        if not gemini_contents:
+            return "No messages to process."
+        body = {"contents": gemini_contents}
+        if system_prompt:
+            body["system_instruction"] = {"parts": [{"text": system_prompt}]}
+        import http.client
+        conn = http.client.HTTPSConnection("generativelanguage.googleapis.com", timeout=REQUEST_TIMEOUT, context=SSL_CONTEXT)
+        conn.request("POST", f"/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
+                     json.dumps(body).encode("utf-8"),
+                     {"Content-Type": "application/json", "User-Agent": "ZeroxAI-Telegram-Bot/1.0"})
+        resp = conn.getresponse()
+        raw = resp.read().decode("utf-8")
+        conn.close()
+        if resp.status != 200:
+            return f"Gemini API error: {resp.status}"
+        data = json.loads(raw)
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return "Gemini returned no response."
+        return candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+    except Exception as e:
+        return f"Gemini API error: {e}"
 
 def save_data():
     # This function is now only for chat-specific data like roles
@@ -1011,7 +1074,33 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
         if cmd == "/about":
             reply("ZeroxAI Bot v2.0 — AI-ассистент + управление чатом.\n"
                   "Создатель: Эрик Арутюнян.\n"
-                  "Работает на Groq AI (openai/gpt-oss-120b).")
+                  "\u2705 Бесплатная версия: Gemini AI (безлимитно)\n"
+                  "\u2B50 Pro: Groq AI (мощнее, платно через Telegram Stars)")
+            return True
+
+        if cmd == "/mypro":
+            if is_pro_user(user_id):
+                reply("\u2B50\uFE0F У вас активна Pro-подписка! Используется Groq AI.")
+            else:
+                reply("\u274C У вас бесплатная версия (Gemini AI).\n"
+                      "Купите Pro: /buypro")
+            return True
+
+        if cmd == "/buypro":
+            price_stars = 100
+            result = telegram_request(token, "createInvoiceLink", {
+                "title": "ZeroxAI Pro",
+                "description": "Доступ к Groq AI — более мощная языковая модель. Безлимитно навсегда.",
+                "payload": f"pro_{user_id}",
+                "currency": "XTR",
+                "prices": [{"label": "ZeroxAI Pro", "amount": price_stars}],
+            })
+            if result.get("ok"):
+                link = result.get("result")
+                reply(f"\u2B50 Купите Pro-доступ за {price_stars} \u2B50:\n{link}\n\n"
+                      "После оплаты бот сразу получит статус Pro.")
+            else:
+                reply(f"\u274C Ошибка создания счета: {result.get('description', 'неизвестно')}")
             return True
 
         if cmd == "/ping":
@@ -1453,7 +1542,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 desc = f"нет совпадений: {r1} {r2} {r3} Проиграно {bet}"
             import html as _html
             name = user.get("first_name", f"ID {user_id}")
-            ai_text = call_groq([{
+            ai_text = call_ai([{
                 "role": "system",
                 "content": "Ты ведущий казино. Пиши кратко, 1 предложение, элегантно. Без HTML, без звёздочек. Обратись к игроку по имени, упомяни комбинацию и сумму. Минимум эмодзи.",
             }, {
@@ -2010,9 +2099,28 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
 
 
 def handle_update(token, update):
+    if "pre_checkout_query" in update:
+        try:
+            pq = update["pre_checkout_query"]
+            telegram_request(token, "answerPreCheckoutQuery", {
+                "pre_checkout_query_id": pq["id"],
+                "ok": True
+            })
+        except BaseException as e:
+            print(f"Error handling pre_checkout_query: {e}", file=sys.stderr)
+        return
     if "message" in update:
         try:
-            handle_message(token, update["message"])
+            msg = update["message"]
+            if "successful_payment" in msg:
+                user_id = msg.get("from", {}).get("id")
+                if user_id:
+                    add_pro_user(user_id)
+                    reply_message(token, msg["chat"]["id"],
+                        "\u2B50\uFE0F Поздравляю! Вы стали Pro-пользователем! "
+                        "Теперь вы используете Groq AI — более мощную модель.", msg.get("message_id"))
+                return
+            handle_message(token, msg)
         except BaseException as e:
             print(f"Error handling message: {e}", file=sys.stderr)
             import traceback
@@ -2071,7 +2179,7 @@ def handle_message(token, message):
             return
 
     try:
-        answer = call_groq(build_messages(chat_id, text))
+        answer = call_ai(build_messages(chat_id, text), user_id)
         remember(chat_id, text, answer)
         answer_msg_id = send_thinking_and_answer(token, chat_id, answer)
 
