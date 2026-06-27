@@ -167,7 +167,8 @@ def get_balance(user_id):
             cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
             result = cur.fetchone()
             return result[0] if result else 0
-    except Exception:
+    except Exception as e:
+        print(f"get_balance({user_id}) error: {e}", file=sys.stderr, flush=True)
         return 0
 
 def set_balance(user_id, amount):
@@ -264,6 +265,13 @@ class db_cursor:
         if not DB_POOL:
             raise RuntimeError("Database is not available.")
         self.conn = DB_POOL.getconn()
+        # Проверка живости соединения
+        try:
+            self.conn.cursor().execute("SELECT 1")
+        except Exception:
+            # Убитое соединение — заменяем
+            DB_POOL.putconn(self.conn, close=True)
+            self.conn = DB_POOL.getconn()
         self.cur = self.conn.cursor()
         return self.cur
 
