@@ -344,6 +344,14 @@ with gr.Blocks(title="ZeroxAI") as demo:
 if __name__ == "__main__":
     import threading
     import telegram_bot
-    t = threading.Thread(target=telegram_bot.main, daemon=True)
-    t.start()
-    demo.launch(css=CSS, theme=THEME)
+
+    if os.getenv("TELEGRAM_BOT_TOKEN", "").strip():
+        threading.Thread(target=telegram_bot.main, daemon=True).start()
+
+    port = int(os.getenv("PORT", "7860"))
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=port,
+        css=CSS,
+        theme=THEME,
+    )

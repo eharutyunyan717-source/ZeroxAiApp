@@ -17,7 +17,7 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 REQUEST_TIMEOUT = 90
 MAX_HISTORY_MESSAGES = 24
 MAX_TELEGRAM_MESSAGE = 3900
-DATA_FILE = "data.json"
+DATA_FILE = os.getenv("DATA_FILE", "data.json")
 TOKEN_LIMIT = 100000
 
 ACTIVE_KEY_INDEX = 0
