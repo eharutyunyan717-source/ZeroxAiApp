@@ -2102,6 +2102,9 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 r2 = _SLOT_SYMS[(idx % 16) // 4]
                 r3 = _SLOT_SYMS[idx % 4]
             time.sleep(1)
+            luck_suffix = ""
+            if luck > 0 and (r1 == r2 == r3 or r1 == r2 or r2 == r3 or r1 == r3):
+                luck_suffix = f"\n✨ {max(10, luck)}x luck"
             if r1 == r2 == r3:
                 payout = bet * 10
                 add_balance(user_id, payout)
@@ -2109,7 +2112,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     f"\U0001F3B0 Выпало: {r1} {r2} {r3}\n"
                     f"\U0001F389 Поздравляем! <b>ДЖЕКПОТ!</b>\n\n"
                     f"\U0001F4B0 Награда: {fmt_coin(payout)} Coin\n"
-                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
+                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}{luck_suffix}"
                 )
             elif r1 == r2 or r2 == r3 or r1 == r3:
                 payout = bet * 2
@@ -2118,7 +2121,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     f"\U0001F3B0 Выпало: {r1} {r2} {r3}\n"
                     f"\U0001F389 Поздравляем! <b>ВЫИГРЫШ!</b>\n\n"
                     f"\U0001F4B0 Награда: {fmt_coin(payout)} Coin\n"
-                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
+                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}{luck_suffix}"
                 )
             else:
                 add_balance(user_id, -bet)
