@@ -1552,14 +1552,14 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if r1 == r2 == r3:
                 payout = bet * 10
                 add_balance(user_id, payout)
-                result = f"\U0001F3C6 <b>ДЖЕКПОТ!</b>\n{r1}{r2}{r3}\nСтавка: {bet:,} \u00D7 10 = +{payout:,}\n\u26A1 Баланс: {get_balance(user_id):,}"
+                result = f"\U0001F3C6 <b>ДЖЕКПОТ!</b> {r1}{r2}{r3}\n+{payout:,}\n\u26A1 Баланс: {get_balance(user_id):,}"
             elif r1 == r2 or r2 == r3 or r1 == r3:
                 payout = bet * 2
                 add_balance(user_id, payout)
-                result = f"\u2705 <b>ВЫИГРЫШ</b>\n{r1} {r2} {r3}\nСтавка: {bet:,} \u00D7 2 = +{payout:,}\n\u26A1 Баланс: {get_balance(user_id):,}"
+                result = f"\u2705 <b>ВЫИГРЫШ</b> {r1} {r2} {r3}\n+{payout:,}\n\u26A1 Баланс: {get_balance(user_id):,}"
             else:
                 add_balance(user_id, -bet)
-                result = f"\u274C <b>ПРОИГРЫШ</b>\n{r1} {r2} {r3}\n-{bet:,}\n\u26A1 Баланс: {get_balance(user_id):,}"
+                result = f"\u274C <b>ПРОИГРЫШ</b> {r1} {r2} {r3}\n-{bet:,}\n\u26A1 Баланс: {get_balance(user_id):,}"
             reply(result, "HTML")
             return True
 
