@@ -1016,7 +1016,7 @@ KNOWN_COMMANDS = {
     "/transfer", "/give", "/send",
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
-    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben",
+    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro",
 }
 
 def should_respond(message):
@@ -1159,6 +1159,22 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 BOT_DATA["bot_stopped"] = False
                 save_data()
                 reply("\U0001F916 Бот запущен.")
+                return True
+
+            if cmd == "/grantpro":
+                target_ref = parse_user_ref(message, args)
+                if not target_ref and args:
+                    target_ref = args[0]
+                if target_ref:
+                    tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref)
+                    if not tid:
+                        reply("Пользователь не найден.")
+                        return True
+                    add_pro_user(tid)
+                    reply(f"\u2B50\uFE0F Pro подписка выдана пользователю ID {tid} на 30 дней!")
+                else:
+                    add_pro_user(user_id)
+                    reply("\u2B50\uFE0F Вам выдана Pro подписка на 30 дней!")
                 return True
 
             if cmd == "/statbot":
