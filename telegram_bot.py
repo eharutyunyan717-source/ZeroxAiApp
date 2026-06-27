@@ -876,7 +876,7 @@ KNOWN_COMMANDS = {
     "/transfer", "/give", "/send",
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
-    "/server", "/addsticker", "/mypro", "/buypro",
+    "/server", "/addsticker", "/mypro", "/buypro", "/top",
 }
 
 def should_respond(message):
@@ -1030,6 +1030,25 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     f"Активных чатов: {len(chats)}\n"
                     f"Казино: {'✅' if not BOT_DATA.get('casino_disabled') else '⛔'}"
                 )
+                return True
+
+            if cmd == "/top":
+                try:
+                    with db_cursor() as cur:
+                        cur.execute("SELECT user_id, balance FROM users WHERE balance > 0 ORDER BY balance DESC LIMIT 10")
+                        rows = cur.fetchall()
+                except Exception as e:
+                    reply(f"Ошибка: {e}")
+                    return True
+                if not rows:
+                    reply("Нет пользователей с монетами.")
+                    return True
+                lines = ["\U0001F3C6 <b>ТОП ПО МОНЕТАМ</b>"]
+                medals = ["\U0001F947", "\U0001F948", "\U0001F949"]
+                for i, (uid, bal) in enumerate(rows):
+                    medal = medals[i] if i < 3 else f"{i+1}."
+                    lines.append(f"{medal} ID {uid} — {bal:,} Coin")
+                reply("\n".join(lines), "HTML")
                 return True
 
             if cmd == "/tokens":
