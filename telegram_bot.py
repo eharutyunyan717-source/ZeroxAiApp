@@ -334,7 +334,7 @@ def add_pro_user(user_id):
 
 def call_ai(messages, user_id):
     if is_pro_user(user_id):
-        return call_openrouter(messages, "google/gemini-2.0-flash-001")
+        return call_openrouter(messages, "meta-llama/llama-3.3-70b-instruct")
     return call_groq(messages, "llama-3.2-3b-preview")
 
 
@@ -935,7 +935,7 @@ def handle_callback_query(token, callback_query):
 
     if data == "menu_pro":
         if is_pro_user(user_id):
-            text = "\u2B50\uFE0F У вас активна Pro-подписка! Осталось {} дн.".format(pro_days_left(user_id)) + "\nИспользуется OpenRouter (gemini-2.0-flash)."
+            text = "\u2B50\uFE0F У вас активна Pro-подписка! Осталось {} дн.".format(pro_days_left(user_id)) + "\nИспользуется OpenRouter (llama-3.3-70b)."
         else:
             text = "\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\nКупите Pro: /buypro"
         telegram_request(token, "editMessageText", {
@@ -1293,13 +1293,13 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             reply("ZeroxAI Bot v2.0 — AI-ассистент + управление чатом.\n"
                   "Создатель: Эрик Арутюнян.\n"
                   "\u2705 Бесплатная версия: Groq AI (llama-3.2-3b)\n"
-                  "\u2B50 Pro: OpenRouter AI (gemini-2.0-flash, мощнее)")
+                  "\u2B50 Pro: OpenRouter AI (llama-3.3-70b, мощнее)")
             return True
 
         if cmd == "/mypro":
             if is_pro_user(user_id):
                 days = pro_days_left(user_id)
-                reply(f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется OpenRouter (gemini-2.0-flash).")
+                reply(f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется OpenRouter (llama-3.3-70b).")
             else:
                 reply("\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\n"
                       "Купите Pro: /buypro")
@@ -1314,7 +1314,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 "chat_id": chat_id,
                 "title": "\u2B50 ZeroxAI Pro",
                 "description": (
-                    "\u2714\uFE0F Доступ к мощной модели OpenRouter (gemini-2.0-flash)\n"
+                    "\u2714\uFE0F Доступ к мощной модели OpenRouter (llama-3.3-70b)\n"
                     "\u2714\uFE0F Более умные и развёрнутые ответы\n"
                     "\u2714\uFE0F Приоритетная обработка запросов\n"
                     "\u2714\uFE0F На 30 дней — продлевается раз в месяц"
@@ -2430,7 +2430,7 @@ def handle_message(token, message):
             if is_pro_user(user_id):
                 days = pro_days_left(user_id)
                 reply_message(token, chat_id,
-                    f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется OpenRouter (gemini-2.0-flash).", None, reply_markup=km)
+                    f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется OpenRouter (llama-3.3-70b).", None, reply_markup=km)
             else:
                 reply_message(token, chat_id,
                     "\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\nКупите Pro: /buypro", None, reply_markup=km)
