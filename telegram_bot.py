@@ -2294,6 +2294,16 @@ def main():
                 BOT_ID = bot_info.get("result", {}).get("id")
                 BOT_USERNAME = bot_info.get("result", {}).get("username", "")
                 print(f"ZeroxAI Telegram bot is running. @{BOT_USERNAME} (id={BOT_ID})", flush=True)
+                telegram_request(token, "setMyCommands", {
+                    "commands": [
+                        {"command": "start", "description": "Главное меню"},
+                        {"command": "tokens", "description": "Токены Groq"},
+                        {"command": "mypro", "description": "Моя подписка"},
+                        {"command": "buypro", "description": "Купить Pro"},
+                        {"command": "about", "description": "О боте"},
+                        {"command": "commands", "description": "Все команды"},
+                    ]
+                })
                 break
         except Exception as e:
             print(f"Failed to connect to Telegram API: {e}, retrying in 10s...")
