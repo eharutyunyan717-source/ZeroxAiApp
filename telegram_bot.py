@@ -285,6 +285,12 @@ def init_db():
                 cur.execute("ALTER TABLE pro_users ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '30 days'")
         except Exception:
             pass
+        # add luck column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS luck INT NOT NULL DEFAULT 0")
+        except Exception:
+            pass
         print("Database initialized successfully.", flush=True)
     except Exception as e:
         print(f"Failed to initialize database: {e}", file=sys.stderr)
@@ -336,6 +342,22 @@ def add_pro_user(user_id):
             cur.execute("INSERT INTO pro_users (user_id, expires_at) VALUES (%s, NOW() + INTERVAL '30 days') ON CONFLICT (user_id) DO UPDATE SET expires_at = NOW() + INTERVAL '30 days'", (user_id,))
     except Exception as e:
         print(f"add_pro_user({user_id}) error: {e}", file=sys.stderr)
+
+def get_luck(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT luck FROM users WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return row[0] if row else 0
+    except Exception:
+        return 0
+
+def set_luck(user_id, value):
+    try:
+        with db_cursor() as cur:
+            cur.execute("INSERT INTO users (user_id, balance, luck) VALUES (%s, 0, %s) ON CONFLICT (user_id) DO UPDATE SET luck = %s", (user_id, value, value))
+    except Exception as e:
+        print(f"set_luck({user_id}) error: {e}", file=sys.stderr)
 
 FREE_TOKEN_LIMIT = 2000
 PRO_TOKEN_LIMIT = 10000
@@ -1102,7 +1124,7 @@ KNOWN_COMMANDS = {
     "/transfer", "/give", "/send",
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
-    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro",
+    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset",
 }
 
 def should_respond(message):
@@ -1261,6 +1283,25 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 else:
                     add_pro_user(user_id)
                     reply("\u2B50\uFE0F Вам выдана Pro подписка на 30 дней!")
+                return True
+
+            if cmd == "/luckset":
+                target_ref = parse_user_ref(message, args)
+                if not target_ref:
+                    reply("Ответьте на сообщение или укажите @username/ID.")
+                    return True
+                try:
+                    luck_val = int([a for a in args if a.lstrip("-").isdigit()][-1])
+                except (IndexError, ValueError):
+                    reply("Укажите значение удачи (0-100). Пример: /luckset @username 50")
+                    return True
+                luck_val = max(0, min(100, luck_val))
+                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref)
+                if not tid:
+                    reply("Пользователь не найден.")
+                    return True
+                set_luck(tid, luck_val)
+                reply(f"\U0001F340 Удача для ID {tid} установлена на {luck_val}%")
                 return True
 
             if cmd == "/statbot":
@@ -1851,9 +1892,29 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 dice_value = 1
             _SLOT_SYMS = ["\u25AC", "\U0001F347", "\U0001F34B", "7\uFE0F\u20E3"]
             idx = dice_value - 1
-            r1 = _SLOT_SYMS[idx // 16]
-            r2 = _SLOT_SYMS[(idx % 16) // 4]
-            r3 = _SLOT_SYMS[idx % 4]
+            # apply luck
+            luck = get_luck(user_id)
+            if luck > 0:
+                if _random.randint(1, 100) <= luck // 2:
+                    # force jackpot
+                    sym = _random.choice(_SLOT_SYMS)
+                    r1 = r2 = r3 = sym
+                elif _random.randint(1, 100) <= luck:
+                    # force at least pair
+                    pair_sym = _random.choice(_SLOT_SYMS)
+                    third_sym = _random.choice(_SLOT_SYMS)
+                    idx = _random.randint(0, 3)
+                    syms = [pair_sym, pair_sym, third_sym]
+                    _random.shuffle(syms)
+                    r1, r2, r3 = syms
+                else:
+                    r1 = _SLOT_SYMS[idx // 16]
+                    r2 = _SLOT_SYMS[(idx % 16) // 4]
+                    r3 = _SLOT_SYMS[idx % 4]
+            else:
+                r1 = _SLOT_SYMS[idx // 16]
+                r2 = _SLOT_SYMS[(idx % 16) // 4]
+                r3 = _SLOT_SYMS[idx % 4]
             time.sleep(1)
             if r1 == r2 == r3:
                 payout = bet * 10
