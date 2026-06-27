@@ -1548,12 +1548,12 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             r1 = _SLOT_SYMS[idx // 16]
             r2 = _SLOT_SYMS[(idx % 16) // 4]
             r3 = _SLOT_SYMS[idx % 4]
-            time.sleep(4)
+            time.sleep(1)
             if r1 == r2 == r3:
                 payout = bet * 10
                 add_balance(user_id, payout)
                 result = (
-                    f"\U0001F3B0 Выпало: {r1}{r2}{r3}\n"
+                    f"\U0001F3B0 Выпало: {r1} {r2} {r3}\n"
                     f"\U0001F389 Поздравляем! <b>ДЖЕКПОТ!</b>\n\n"
                     f"\U0001F4B0 Награда: {payout:,} Coin\n"
                     f"\u26A1 Баланс: {get_balance(user_id):,}"
