@@ -779,6 +779,28 @@ def call_groq(messages, model=None):
                 conn.close()
         time.sleep(0.2)
     ACTIVE_KEY_INDEX = (ACTIVE_KEY_INDEX + 1) % len(api_keys)
+    # fallback to OpenRouter if available
+    or_key = os.getenv("OPENROUTER_API_KEY")
+    if or_key:
+        try:
+            payload["model"] = "google/gemini-2.0-flash-001"
+            body2 = json.dumps(payload).encode("utf-8")
+            conn = http.client.HTTPSConnection("openrouter.ai", timeout=REQUEST_TIMEOUT, context=SSL_CONTEXT)
+            conn.request("POST", "/api/v1/chat/completions", body=body2, headers={
+                "Content-Type": "application/json", "Accept": "application/json",
+                "User-Agent": "ZeroxAI-Telegram-Bot/1.0",
+                "Authorization": f"Bearer {or_key}",
+                "HTTP-Referer": "https://zeroxaibot.fly.dev",
+                "X-Title": "ZeroxAI",
+            })
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8")
+            conn.close()
+            if resp.status == 200:
+                data = json.loads(raw)
+                return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except Exception as e:
+            last_error = f"OpenRouter fallback: {e}"
     return f"Не удалось получить ответ: {last_error}"
 
 
