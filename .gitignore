@@ -16,3 +16,6 @@ data.json
 # IDE/Editor specific
 .idea/
 .vscode/
+
+# stray git marker file
+/git
