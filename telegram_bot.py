@@ -1035,7 +1035,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if cmd == "/top":
                 try:
                     with db_cursor() as cur:
-                        cur.execute("SELECT user_id, balance FROM users WHERE balance > 0 ORDER BY balance DESC LIMIT 10")
+                        cur.execute("SELECT user_id, balance FROM users WHERE balance > 0 ORDER BY balance DESC LIMIT 3")
                         rows = cur.fetchall()
                 except Exception as e:
                     reply(f"Ошибка: {e}")
@@ -1046,7 +1046,6 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 lines = ["\U0001F3C6 <b>ТОП ПО МОНЕТАМ</b>"]
                 medals = ["\U0001F947", "\U0001F948", "\U0001F949"]
                 for i, (uid, bal) in enumerate(rows):
-                    medal = medals[i] if i < 3 else f"{i+1}."
                     name = f"ID {uid}"
                     try:
                         info = telegram_request(token, "getChat", {"chat_id": uid})
@@ -1055,7 +1054,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                             name = u.get("username") and f"@{u['username']}" or u.get("first_name", name)
                     except Exception:
                         pass
-                    lines.append(f"{medal} {name} — {bal:,} Coin")
+                    lines.append(f"{medals[i]} {name} — {bal:,} Coin")
                 reply("\n".join(lines), "HTML")
                 return True
 
