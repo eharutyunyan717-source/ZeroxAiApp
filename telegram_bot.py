@@ -1500,11 +1500,18 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 except Exception as e:
                     reply(f"Ошибка: {e}")
                     return True
-                if not rows:
-                    reply("Нет пользователей с монетами.")
+                if not rows and not MESSAGE_COUNTS:
+                    reply("Пока нет данных для топа.")
                     return True
-                lines = ["\U0001F3C6 <b>ТОП ПО МОНЕТАМ</b>"]
-                medals = ["\U0001F947", "\U0001F948", "\U0001F949"]
+                ranked_messages = []
+                for uid, count in MESSAGE_COUNTS.items():
+                    if count > 0:
+                        ranked_messages.append((count, uid))
+                ranked_messages.sort(reverse=True)
+                message_rows = ranked_messages[:3]
+
+                lines = ["🏆 <b>ТОП ИГРОКОВ ПО МОНЕТАМ</b>"]
+                medals = ["🥇", "🥈", "🥉"]
                 for i, (uid, bal) in enumerate(rows):
                     name = f"ID {uid}"
                     try:
@@ -1514,7 +1521,22 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                             name = u.get("username") and f"@{u['username']}" or u.get("first_name", name)
                     except Exception:
                         pass
-                    lines.append(f"{medals[i]} {name} — {fmt_coin(bal)} Coin")
+                    lines.append(f"{medals[i]} {name} — {fmt_coin(bal)} 🪙 Coin")
+
+                lines.append("")
+                lines.append("💬 <b>ТОП ПО СООБЩЕНИЯМ</b>")
+                for i, (count, uid) in enumerate(message_rows):
+                    name = f"ID {uid}"
+                    try:
+                        info = telegram_request(token, "getChat", {"chat_id": uid})
+                        if info and info.get("ok"):
+                            u = info.get("result", {})
+                            name = u.get("username") and f"@{u['username']}" or u.get("first_name", name)
+                    except Exception:
+                        pass
+                    suffix = "сообщение" if count % 10 == 1 and count % 100 != 11 else "сообщений"
+                    lines.append(f"{medals[i]} {name} — {count} {suffix} 💬")
+
                 reply("\n".join(lines), "HTML")
                 return True
 
