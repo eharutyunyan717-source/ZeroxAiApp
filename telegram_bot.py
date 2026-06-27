@@ -161,7 +161,7 @@ DB_POOL = None
 WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN")
 STARTING_BALANCE = 500
 FREE_COOLDOWN_SECONDS = 12 * 60 * 60
-PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500}
+PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500, "topaichatmeneger2026": 0}
 
 
 def get_balance(user_id):
@@ -214,7 +214,8 @@ def redeem_promo(user_id, code):
             if cur.fetchone():
                 return False, "Вы уже активировали этот промокод."
             cur.execute("INSERT INTO claims (user_id, claim_type) VALUES (%s, %s)", (user_id, f"promo_{normalized}"))
-            reward = PROMO_REWARDS[normalized]
+            base = PROMO_REWARDS[normalized]
+            reward = base if base > 0 else (25000 if is_pro_user(user_id) else 5000)
             add_balance(user_id, reward)
             return True, reward
     except Exception as e:
