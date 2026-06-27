@@ -1047,7 +1047,15 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 medals = ["\U0001F947", "\U0001F948", "\U0001F949"]
                 for i, (uid, bal) in enumerate(rows):
                     medal = medals[i] if i < 3 else f"{i+1}."
-                    lines.append(f"{medal} ID {uid} — {bal:,} Coin")
+                    name = f"ID {uid}"
+                    try:
+                        info = telegram_request(token, "getChat", {"chat_id": uid})
+                        if info and info.get("ok"):
+                            u = info.get("result", {})
+                            name = u.get("username") and f"@{u['username']}" or u.get("first_name", name)
+                    except Exception:
+                        pass
+                    lines.append(f"{medal} {name} — {bal:,} Coin")
                 reply("\n".join(lines), "HTML")
                 return True
 
