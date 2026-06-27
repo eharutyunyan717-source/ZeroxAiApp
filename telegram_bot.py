@@ -421,7 +421,10 @@ def get_user_items(user_id):
 def set_user_items(user_id, items):
     try:
         with db_cursor() as cur:
-            cur.execute("UPDATE users SET items = %s WHERE user_id = %s", (json.dumps(items), user_id))
+            cur.execute(
+                "INSERT INTO users (user_id, balance, luck, items) VALUES (%s, 0, 0, %s) ON CONFLICT (user_id) DO UPDATE SET items = %s",
+                (user_id, json.dumps(items), json.dumps(items)),
+            )
     except Exception as e:
         print(f"set_user_items({user_id}) error: {e}", file=sys.stderr)
 
@@ -430,6 +433,15 @@ def has_active_item(user_id, item_key):
     item = items.get(item_key)
     if not item: return False
     return time.time() < item.get("expires_at", 0)
+
+
+def get_luck_boost(user_id):
+    boost = 0
+    if has_active_item(user_id, "luck_boost_10"):
+        boost = max(boost, 10)
+    if has_active_item(user_id, "luck_boost_25"):
+        boost = max(boost, 25)
+    return boost
 
 def short_num(n):
     if n >= 1000000000:
@@ -2066,16 +2078,15 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             idx = dice_value - 1
             # apply luck
             base_luck = get_luck(user_id)
-            luck_boost = 10 if has_active_item(user_id, "luck_boost_10") else 0
-            luck_boost = 25 if has_active_item(user_id, "luck_boost_25") else luck_boost
-            luck = base_luck + luck_boost
+            luck = base_luck + get_luck_boost(user_id)
             if luck > 0:
-                if _random.randint(1, 100) <= luck // 2:
-                    # force jackpot
+                luck_roll = _random.randint(1, 100)
+                if luck_roll <= min(90, luck):
+                    # strong boost: jackpot or near-jackpot
                     sym = _random.choice(_SLOT_SYMS)
                     r1 = r2 = r3 = sym
-                elif _random.randint(1, 100) <= luck:
-                    # force at least pair
+                elif luck_roll <= min(95, luck + 20):
+                    # medium boost: at least pair
                     pair_sym = _random.choice(_SLOT_SYMS)
                     third_sym = _random.choice(_SLOT_SYMS)
                     idx = _random.randint(0, 3)
