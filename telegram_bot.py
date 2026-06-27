@@ -334,8 +334,41 @@ def add_pro_user(user_id):
 
 def call_ai(messages, user_id):
     if is_pro_user(user_id):
-        return call_groq(messages, MODEL)
+        return call_openrouter(messages, "google/gemini-2.0-flash-001")
     return call_groq(messages, "llama-3.2-3b-preview")
+
+
+def call_openrouter(messages, model=None):
+    or_key = os.getenv("OPENROUTER_API_KEY")
+    if not or_key:
+        return call_groq(messages, model or "openai/gpt-4o")
+    model_name = model or "openai/gpt-4o"
+    payload = {"model": model_name, "messages": messages, "temperature": 0.55, "top_p": 0.9}
+    body = json.dumps(payload).encode("utf-8")
+    import http.client
+    for attempt in range(3):
+        try:
+            conn = http.client.HTTPSConnection("openrouter.ai", timeout=60, context=SSL_CONTEXT)
+            conn.request("POST", "/api/v1/chat/completions", body=body, headers={
+                "Content-Type": "application/json", "Accept": "application/json",
+                "User-Agent": "ZeroxAI-Telegram-Bot/1.0",
+                "Authorization": f"Bearer {or_key}",
+                "HTTP-Referer": "https://zeroxaibot.fly.dev",
+                "X-Title": "ZeroxAI",
+            })
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8")
+            conn.close()
+            if resp.status == 429:
+                time.sleep(2 * (attempt + 1))
+                continue
+            if resp.status != 200:
+                continue
+            data = json.loads(raw)
+            return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except Exception as e:
+            time.sleep(1)
+    return call_groq(messages, model or "openai/gpt-4o")
 
 def call_gemini(messages):
     global _GEMINI_LAST_CALL
@@ -902,7 +935,7 @@ def handle_callback_query(token, callback_query):
 
     if data == "menu_pro":
         if is_pro_user(user_id):
-            text = "\u2B50\uFE0F У вас активна Pro-подписка! Осталось {} дн.".format(pro_days_left(user_id)) + "\nИспользуется Groq AI (openai/gpt-oss-120b)."
+            text = "\u2B50\uFE0F У вас активна Pro-подписка! Осталось {} дн.".format(pro_days_left(user_id)) + "\nИспользуется OpenRouter (gemini-2.0-flash)."
         else:
             text = "\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\nКупите Pro: /buypro"
         telegram_request(token, "editMessageText", {
@@ -1244,13 +1277,13 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             reply("ZeroxAI Bot v2.0 — AI-ассистент + управление чатом.\n"
                   "Создатель: Эрик Арутюнян.\n"
                   "\u2705 Бесплатная версия: Groq AI (llama-3.2-3b)\n"
-                  "\u2B50 Pro: Groq AI (openai/gpt-oss-120b, мощнее)")
+                  "\u2B50 Pro: OpenRouter AI (gemini-2.0-flash, мощнее)")
             return True
 
         if cmd == "/mypro":
             if is_pro_user(user_id):
                 days = pro_days_left(user_id)
-                reply(f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется Groq AI (openai/gpt-oss-120b).")
+                reply(f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется OpenRouter (gemini-2.0-flash).")
             else:
                 reply("\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\n"
                       "Купите Pro: /buypro")
@@ -1265,7 +1298,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 "chat_id": chat_id,
                 "title": "\u2B50 ZeroxAI Pro",
                 "description": (
-                    "\u2714\uFE0F Доступ к мощной модели Groq AI (openai/gpt-oss-120b)\n"
+                    "\u2714\uFE0F Доступ к мощной модели OpenRouter (gemini-2.0-flash)\n"
                     "\u2714\uFE0F Более умные и развёрнутые ответы\n"
                     "\u2714\uFE0F Приоритетная обработка запросов\n"
                     "\u2714\uFE0F На 30 дней — продлевается раз в месяц"
@@ -2381,7 +2414,7 @@ def handle_message(token, message):
             if is_pro_user(user_id):
                 days = pro_days_left(user_id)
                 reply_message(token, chat_id,
-                    f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется Groq AI (openai/gpt-oss-120b).", None, reply_markup=km)
+                    f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется OpenRouter (gemini-2.0-flash).", None, reply_markup=km)
             else:
                 reply_message(token, chat_id,
                     "\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\nКупите Pro: /buypro", None, reply_markup=km)
