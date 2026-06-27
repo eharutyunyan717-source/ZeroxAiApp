@@ -1,6 +1,11 @@
 import unittest
 
-from telegram_bot import format_duration, format_shop_item_block, parse_transfer_input
+from telegram_bot import (
+    build_slot_symbols,
+    format_duration,
+    format_shop_item_block,
+    parse_transfer_input,
+)
 
 
 class ShopFormattingTests(unittest.TestCase):
@@ -31,6 +36,16 @@ class ShopFormattingTests(unittest.TestCase):
         target_ref, amount = parse_transfer_input(["100"], {"reply_to_message": {"from": {"id": 42}}, "entities": []})
         self.assertEqual(target_ref, 42)
         self.assertEqual(amount, 100)
+
+    def test_build_slot_symbols_for_jackpot_luck(self):
+        symbols = build_slot_symbols(25, 5, ("■", "🍇", "🍋"))
+        self.assertEqual(symbols[0], symbols[1])
+        self.assertEqual(symbols[1], symbols[2])
+
+    def test_build_slot_symbols_for_pair_luck(self):
+        symbols = build_slot_symbols(25, 30, ("■", "🍇", "🍋"))
+        self.assertEqual(symbols[0], symbols[1])
+        self.assertNotEqual(symbols[1], symbols[2])
 
 
 if __name__ == "__main__":

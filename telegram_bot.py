@@ -456,6 +456,19 @@ def fmt_coin(n):
     return f"{n:,} ({short_num(n)})"
 
 
+def build_slot_symbols(luck, luck_roll, slot_symbols):
+    if luck <= 0:
+        return None
+    if luck_roll <= min(90, luck):
+        symbol = slot_symbols[0] if slot_symbols else "■"
+        return (symbol, symbol, symbol)
+    if luck_roll <= min(95, luck + 20):
+        pair_symbol = slot_symbols[0] if slot_symbols else "■"
+        third_symbol = slot_symbols[1] if len(slot_symbols) > 1 else pair_symbol
+        return (pair_symbol, pair_symbol, third_symbol)
+    return None
+
+
 def format_duration(hours):
     if hours <= 0:
         return "сейчас"
@@ -2076,34 +2089,21 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 dice_value = 1
             _SLOT_SYMS = ["\u25AC", "\U0001F347", "\U0001F34B", "7\uFE0F\u20E3"]
             idx = dice_value - 1
-            # apply luck
             base_luck = get_luck(user_id)
             luck = base_luck + get_luck_boost(user_id)
-            if luck > 0:
-                luck_roll = _random.randint(1, 100)
-                if luck_roll <= min(90, luck):
-                    # strong boost: jackpot or near-jackpot
-                    sym = _random.choice(_SLOT_SYMS)
-                    r1 = r2 = r3 = sym
-                elif luck_roll <= min(95, luck + 20):
-                    # medium boost: at least pair
-                    pair_sym = _random.choice(_SLOT_SYMS)
-                    third_sym = _random.choice(_SLOT_SYMS)
-                    idx = _random.randint(0, 3)
-                    syms = [pair_sym, pair_sym, third_sym]
-                    _random.shuffle(syms)
-                    r1, r2, r3 = syms
-                else:
-                    r1 = _SLOT_SYMS[idx // 16]
-                    r2 = _SLOT_SYMS[(idx % 16) // 4]
-                    r3 = _SLOT_SYMS[idx % 4]
+            luck_roll = _random.randint(1, 100)
+            boosted_symbols = build_slot_symbols(luck, luck_roll, _SLOT_SYMS)
+            if boosted_symbols is not None:
+                r1, r2, r3 = boosted_symbols
+                used_luck = True
             else:
                 r1 = _SLOT_SYMS[idx // 16]
                 r2 = _SLOT_SYMS[(idx % 16) // 4]
                 r3 = _SLOT_SYMS[idx % 4]
+                used_luck = False
             time.sleep(1)
             luck_suffix = ""
-            if luck > 0 and (r1 == r2 == r3 or r1 == r2 or r2 == r3 or r1 == r3):
+            if used_luck and (r1 == r2 == r3 or r1 == r2 or r2 == r3 or r1 == r3):
                 luck_suffix = f"\n✨ {max(10, luck)}x luck"
             if r1 == r2 == r3:
                 payout = bet * 10
