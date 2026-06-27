@@ -27,6 +27,8 @@ DATA_FILE = os.environ.get("DATA_PATH") or ("/data/data.json" if os.path.exists(
 
 ACTIVE_KEY_INDEX = 0
 TOKEN_LIMIT = 100000
+_GEMINI_LAST_CALL = 0
+_GEMINI_LOCK = threading.Lock()
 USER_HISTORIES = {}
 BOT_ID = None
 BOT_USERNAME = None
@@ -309,42 +311,56 @@ def call_ai(messages, user_id):
     return call_gemini(messages)
 
 def call_gemini(messages):
+    global _GEMINI_LAST_CALL
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return "Gemini API key not configured. Ask the admin to set GEMINI_API_KEY."
-    try:
-        system_prompt = ""
-        gemini_contents = []
-        for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "system":
-                system_prompt = content
-            else:
-                gemini_role = "model" if role == "assistant" else "user"
-                gemini_contents.append({"role": gemini_role, "parts": [{"text": content}]})
-        if not gemini_contents:
-            return "No messages to process."
-        body = {"contents": gemini_contents}
-        if system_prompt:
-            body["system_instruction"] = {"parts": [{"text": system_prompt}]}
-        import http.client
-        conn = http.client.HTTPSConnection("generativelanguage.googleapis.com", timeout=REQUEST_TIMEOUT, context=SSL_CONTEXT)
-        conn.request("POST", f"/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
-                     json.dumps(body).encode("utf-8"),
-                     {"Content-Type": "application/json", "User-Agent": "ZeroxAI-Telegram-Bot/1.0"})
-        resp = conn.getresponse()
-        raw = resp.read().decode("utf-8")
-        conn.close()
-        if resp.status != 200:
-            return f"Gemini API error: {resp.status}"
-        data = json.loads(raw)
-        candidates = data.get("candidates", [])
-        if not candidates:
-            return "Gemini returned no response."
-        return candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
-    except Exception as e:
-        return f"Gemini API error: {e}"
+    with _GEMINI_LOCK:
+        since_last = time.time() - _GEMINI_LAST_CALL
+        if since_last < 1.5:
+            time.sleep(1.5 - since_last)
+    models = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    system_prompt = ""
+    gemini_contents = []
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role == "system":
+            system_prompt = content
+        else:
+            gemini_role = "model" if role == "assistant" else "user"
+            gemini_contents.append({"role": gemini_role, "parts": [{"text": content}]})
+    if not gemini_contents:
+        return "No messages to process."
+    body = {"contents": gemini_contents}
+    if system_prompt:
+        body["system_instruction"] = {"parts": [{"text": system_prompt}]}
+    import http.client
+    for model in models:
+        for attempt in range(3):
+            try:
+                conn = http.client.HTTPSConnection("generativelanguage.googleapis.com", timeout=REQUEST_TIMEOUT, context=SSL_CONTEXT)
+                conn.request("POST", f"/v1beta/models/{model}:generateContent?key={api_key}",
+                             json.dumps(body).encode("utf-8"),
+                             {"Content-Type": "application/json", "User-Agent": "ZeroxAI-Telegram-Bot/1.0"})
+                resp = conn.getresponse()
+                raw = resp.read().decode("utf-8")
+                conn.close()
+                if resp.status == 429:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                if resp.status != 200:
+                    break
+                data = json.loads(raw)
+                with _GEMINI_LOCK:
+                    _GEMINI_LAST_CALL = time.time()
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    return "Gemini returned no response."
+                return candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+            except Exception as e:
+                time.sleep(1)
+    return "Gemini временно недоступен (429). Попробуйте позже."
 
 def save_data():
     # This function is now only for chat-specific data like roles
