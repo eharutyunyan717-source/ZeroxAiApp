@@ -47,6 +47,10 @@ class ShopFormattingTests(unittest.TestCase):
         self.assertEqual(symbols[0], symbols[1])
         self.assertNotEqual(symbols[1], symbols[2])
 
+    def test_build_slot_symbols_keeps_luck_effective_at_mid_roll(self):
+        symbols = build_slot_symbols(25, 50, ("■", "🍇", "🍋"))
+        self.assertIsNotNone(symbols)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -459,12 +459,14 @@ def fmt_coin(n):
 def build_slot_symbols(luck, luck_roll, slot_symbols):
     if luck <= 0:
         return None
-    if luck_roll <= min(90, luck):
+    if luck_roll <= min(40, max(8, luck // 2 + 5)):
         symbol = slot_symbols[0] if slot_symbols else "■"
         return (symbol, symbol, symbol)
-    if luck_roll <= min(95, luck + 20):
+    if luck_roll <= min(98, luck + 30):
         pair_symbol = slot_symbols[0] if slot_symbols else "■"
         third_symbol = slot_symbols[1] if len(slot_symbols) > 1 else pair_symbol
+        if third_symbol == pair_symbol:
+            third_symbol = slot_symbols[2] if len(slot_symbols) > 2 else pair_symbol
         return (pair_symbol, pair_symbol, third_symbol)
     return None
 
