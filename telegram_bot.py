@@ -2525,6 +2525,7 @@ def handle_message(token, message):
             text = text.replace(cmd_name, cmd_name.split("@")[0], 1)
         if handle_command(token, message, chat, user, chat_id, user_id, text):
             return
+        return  # don't send unknown commands to AI
 
     # handle reply keyboard buttons
     km = _menu_kb()
