@@ -335,7 +335,7 @@ def add_pro_user(user_id):
 def call_ai(messages, user_id):
     if is_pro_user(user_id):
         return call_openrouter(messages, "openai/gpt-4o-mini")
-    return call_groq(messages, "llama-3.2-3b-preview")
+    return call_groq(messages, "llama-3.1-8b-instant")
 
 
 def call_openrouter(messages, model=None):
@@ -937,7 +937,7 @@ def handle_callback_query(token, callback_query):
         if is_pro_user(user_id):
             text = "\u2B50\uFE0F У вас активна Pro-подписка! Осталось {} дн.".format(pro_days_left(user_id)) + "\nИспользуется OpenRouter (gpt-4o-mini)."
         else:
-            text = "\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\nКупите Pro: /buypro"
+            text = "\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\nКупите Pro: /buypro"
         telegram_request(token, "editMessageText", {
             "chat_id": chat_id, "message_id": msg_id, "text": text,
             "reply_markup": {
@@ -1292,7 +1292,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
         if cmd == "/about":
             reply("ZeroxAI Bot v2.0 — AI-ассистент + управление чатом.\n"
                   "Создатель: Эрик Арутюнян.\n"
-                  "\u2705 Бесплатная версия: Groq AI (llama-3.2-3b)\n"
+                  "\u2705 Бесплатная версия: Groq AI (llama-3.1-8b)\n"
                    "\u2B50 Pro: OpenRouter AI (gpt-4o-mini, мощнее)")
             return True
 
@@ -1301,7 +1301,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 days = pro_days_left(user_id)
                 reply(f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется OpenRouter (gpt-4o-mini).")
             else:
-                reply("\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\n"
+                reply("\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\n"
                       "Купите Pro: /buypro")
             return True
 
@@ -2433,7 +2433,7 @@ def handle_message(token, message):
                     f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется OpenRouter (gpt-4o-mini).", None, reply_markup=km)
             else:
                 reply_message(token, chat_id,
-                    "\u274C У вас бесплатная версия (Groq AI, llama-3.2-3b).\nКупите Pro: /buypro", None, reply_markup=km)
+                    "\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\nКупите Pro: /buypro", None, reply_markup=km)
         else:
             used = TOKEN_USAGE['total']
             limit = TOKEN_LIMIT
