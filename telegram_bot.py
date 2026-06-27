@@ -1,0 +1,2249 @@
+import io
+import json
+import os
+import random as _random
+import re
+import socket
+import ssl
+import struct
+import time
+import urllib.error
+import urllib.request
+import urllib.parse
+import zipfile
+
+MODEL = "openai/gpt-oss-120b"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+REQUEST_TIMEOUT = 90
+MAX_HISTORY_MESSAGES = 24
+MAX_TELEGRAM_MESSAGE = 3900
+DATA_FILE = "data.json"
+TOKEN_LIMIT = 100000
+
+ACTIVE_KEY_INDEX = 0
+USER_HISTORIES = {}
+BOT_ID = None
+BOT_USERNAME = None
+CODE_STORE = {}
+BOT_DATA = {}
+TOKEN_USAGE = {"prompt": 0, "completion": 0, "total": 0}
+RCON_SERVERS = {}  # chat_id -> {"host": str, "port": int, "password": str}
+STICKER_POOL = []  # случайные стикеры для слота
+
+
+def rcon_packet(req_id, ptype, payload):
+    payload_bytes = payload.encode("utf-8")
+    length = 10 + len(payload_bytes)
+    return struct.pack("<ii", length, req_id) + struct.pack("<i", ptype) + payload_bytes + b"\x00\x00"
+
+
+def recv_exact(sock, n):
+    data = b""
+    while len(data) < n:
+        chunk = sock.recv(n - len(data))
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def rcon_command(host, port, password, command):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((host, port))
+
+        # Login
+        sock.send(rcon_packet(0, 3, password))
+        raw_len = recv_exact(sock, 4)
+        if len(raw_len) < 4:
+            sock.close()
+            return None, "Нет ответа при логине"
+        total = struct.unpack("<i", raw_len)[0]
+        raw_rest = recv_exact(sock, total)
+        sock.close()
+        if len(raw_rest) < 10:
+            return None, f"Короткий ответ логина ({len(raw_rest)})"
+        req_id = struct.unpack("<i", raw_rest[:4])[0]
+        if req_id == -1:
+            return None, "Неверный пароль или отклонено"
+
+        # Command — новый сокет
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((host, port))
+        sock.send(rcon_packet(0, 3, password))
+        raw_len = recv_exact(sock, 4)
+        if len(raw_len) >= 4:
+            recv_exact(sock, struct.unpack("<i", raw_len)[0])  # вычитываем login
+        sock.send(rcon_packet(1, 2, command))
+
+        raw_len = recv_exact(sock, 4)
+        if len(raw_len) < 4:
+            sock.close()
+            return None, "Нет ответа на команду"
+        total = struct.unpack("<i", raw_len)[0]
+        raw_rest = recv_exact(sock, total)
+        sock.close()
+        if len(raw_rest) < 10:
+            return "", None
+        payload = raw_rest[8:].rstrip(b"\x00").decode("utf-8", errors="replace")
+        return payload, None
+    except socket.timeout:
+        return None, "Таймаут подключения (5 сек)"
+    except Exception as e:
+        return None, str(e)
+
+
+_STICKER_SETS = ["Niced", "Tuz", "Motes", "Boo", "Cutie", "Meme", "Animals", "Sova"]
+
+
+def load_sticker_pool(token):
+    global STICKER_POOL
+    if STICKER_POOL:
+        return
+    seen = set()
+    for name in _STICKER_SETS:
+        try:
+            data = telegram_request(token, "getStickerSet", {"name": name})
+            if data and "result" in data:
+                for s in data["result"].get("stickers", []):
+                    fid = s.get("file_id")
+                    if fid and fid not in seen:
+                        seen.add(fid)
+                        STICKER_POOL.append(fid)
+        except Exception:
+            pass
+
+
+def send_random_sticker(token, chat_id):
+    if not STICKER_POOL:
+        try:
+            telegram_request(token, "sendMessage", {
+                "chat_id": chat_id, "text": "\U0001F3B0 Вращаем..."
+            })
+        except Exception:
+            pass
+        return
+    fid = _random.choice(STICKER_POOL)
+    try:
+        telegram_request(token, "sendSticker", {"chat_id": chat_id, "sticker": fid})
+    except Exception:
+        pass
+
+
+def load_dotenv():
+    try:
+        with open(".env", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+    except Exception:
+        pass
+
+
+load_dotenv()
+
+TELEGRAM_BASE_URL = os.getenv("TELEGRAM_PROXY_URL", "https://dry-water-835f.eharutyunyan580.workers.dev")
+
+STARTING_BALANCE = 500
+
+SHOP_ITEMS = {
+    "luck": {
+        "id": "luck_2x",
+        "name": "\U0001F9EA Зелье 2\u00d7 удачи",
+        "price": 100000,
+        "desc": "Следующая игра в казино: +50% шанс выигрыша",
+    },
+    "coins": {
+        "id": "coins_2x",
+        "name": "\U0001F9EA Зелье 2\u00d7 монет",
+        "price": 150000,
+        "desc": "Следующий выигрыш в казино: монеты \u00d72",
+    },
+}
+
+def get_balance(user_id):
+    if "balances" not in BOT_DATA:
+        BOT_DATA["balances"] = {}
+    return BOT_DATA["balances"].get(str(user_id), 0)
+
+def set_balance(user_id, amount):
+    BOT_DATA.setdefault("balances", {})[str(user_id)] = amount
+    save_data()
+
+def add_balance(user_id, amount):
+    bal = get_balance(user_id) + amount
+    set_balance(user_id, bal)
+    return bal
+
+def get_claim(user_id):
+    return BOT_DATA.get("claims", {}).get(str(user_id), {})
+
+def set_claim(user_id, claim_type):
+    BOT_DATA.setdefault("claims", {})[str(user_id)] = {"type": claim_type, "time": time.time()}
+    save_data()
+
+def get_inventory(user_id):
+    return BOT_DATA.setdefault("inventory", {}).get(str(user_id), {})
+
+def set_inventory(user_id, inv):
+    BOT_DATA.setdefault("inventory", {})[str(user_id)] = inv
+    save_data()
+
+def add_item(user_id, item_id, count=1):
+    inv = get_inventory(user_id)
+    inv[item_id] = inv.get(item_id, 0) + count
+    set_inventory(user_id, inv)
+
+def remove_item(user_id, item_id, count=1):
+    inv = get_inventory(user_id)
+    if inv.get(item_id, 0) < count:
+        return False
+    inv[item_id] -= count
+    if inv[item_id] <= 0:
+        del inv[item_id]
+    set_inventory(user_id, inv)
+    return True
+
+def get_active_buffs(user_id):
+    return BOT_DATA.setdefault("active_buffs", {}).get(str(user_id), {})
+
+def set_active_buff(user_id, buff_id, active=True):
+    buffs = BOT_DATA.setdefault("active_buffs", {})
+    uid = str(user_id)
+    if active:
+        buffs.setdefault(uid, {})[buff_id] = True
+    else:
+        if uid in buffs and buff_id in buffs[uid]:
+            del buffs[uid][buff_id]
+            if not buffs[uid]:
+                del buffs[uid]
+    save_data()
+
+def clear_buff(user_id, buff_id):
+    set_active_buff(user_id, buff_id, False)
+
+def find_shop_item(query):
+    q = query.lower().strip()
+    aliases = {
+        "luck": "luck", "удача": "luck", "удачи": "luck", "luck_2x": "luck",
+        "coins": "coins", "монеты": "coins", "монет": "coins", "coins_2x": "coins",
+    }
+    key = aliases.get(q, q)
+    return SHOP_ITEMS.get(key)
+
+def format_inventory(user_id):
+    inv = get_inventory(user_id)
+    buffs = get_active_buffs(user_id)
+    lines = ["\U0001F392 Ваш инвентарь:"]
+    if not inv and not buffs:
+        lines.append("Пусто. Загляните в /shop")
+        return "\n".join(lines)
+    for item_key, item in SHOP_ITEMS.items():
+        count = inv.get(item["id"], 0)
+        if count:
+            lines.append(f"{item['name']} — {count} шт.")
+    if buffs:
+        lines.append("")
+        lines.append("\u26A1 Активные эффекты:")
+        for buff_id in buffs:
+            for item in SHOP_ITEMS.values():
+                if item["id"] == buff_id:
+                    lines.append(f"{item['name']} (на следующую игру)")
+                    break
+    return "\n".join(lines)
+
+def apply_luck_buff(won):
+    if won:
+        return True
+    return _random.random() < 0.5
+
+def apply_coins_buff(payout):
+    return payout * 2
+
+SSL_CONTEXT = ssl.create_default_context()
+SSL_CONTEXT.check_hostname = False
+SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+
+
+LANG_EXT = {
+    "python": ".py", "py": ".py",
+    "javascript": ".js", "js": ".js",
+    "typescript": ".ts", "ts": ".ts",
+    "html": ".html",
+    "css": ".css",
+    "json": ".json",
+    "xml": ".xml",
+    "yaml": ".yml", "yml": ".yml",
+    "markdown": ".md", "md": ".md",
+    "bash": ".sh", "sh": ".sh",
+    "shell": ".sh",
+    "powershell": ".ps1",
+    "c": ".c",
+    "cpp": ".cpp", "c++": ".cpp",
+    "h": ".h",
+    "java": ".java",
+    "go": ".go",
+    "rust": ".rs",
+    "ruby": ".rb",
+    "php": ".php",
+    "sql": ".sql",
+    "dockerfile": "", "docker": "",
+    "text": ".txt",
+}
+
+LEVEL_NAMES = {
+    1: "\U0001F7AB \u0413\u043E\u0441\u0442\u044C",
+    2: "\U0001F7AB \u041D\u043E\u0432\u0438\u0447\u043E\u043A",
+    3: "\U0001F7AB \u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C",
+    4: "\U0001F7E9 \u041F\u0440\u043E\u0432\u0435\u0440\u0435\u043D\u043D\u044B\u0439",
+    5: "\U0001F7E9 \u041F\u043E\u043C\u043E\u0449\u043D\u0438\u043A",
+    6: "\U0001F7E9 \u041C\u043E\u0434\u0435\u0440\u0430\u0442\u043E\u0440",
+    7: "\U0001F7E6 \u0421\u0442\u0430\u0440\u0448\u0438\u0439 \u043C\u043E\u0434",
+    8: "\U0001F7E6 \u0410\u0434\u043C\u0438\u043D",
+    9: "\U0001F7EA \u0413\u043B\u0430\u0432\u043D\u044B\u0439 \u0430\u0434\u043C\u0438\u043D",
+    10: "\u26A1\uFE0F \u041C\u043E\u043B\u043D\u0438\u044F",
+    11: "\U0001F6E1\uFE0F \u0422\u0435\u0445 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u043A\u0430",
+}
+
+LEVEL_COMMANDS = {
+    1: ["/start", "/help", "/about", "/ping", "/id", "/myrole", "/team", "/lightlist", "/rules", "/commands", "/stats", "/report", "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme", "/free", "/bal", "/slot", "/shop", "/buy", "/inv", "/use"],
+    5: ["/warn", "/warns", "/unwarn"],
+    6: ["/mute", "/unmute", "/kick", "/ban", "/unban"],
+    8: ["/role add", "/role remove", "/role give", "/role take", "/role list", "/role info", "/setrules"],
+    10: ["/ticket", "/closeticket", "/feedback", "/announce", "/userinfo", "/support", "/clean", "/pin", "/unpin", "/slowmode", "/say", "/welcome", "/delete", "/banlist"],
+}
+
+SYSTEM_PROMPT = """
+Ты ZeroxAI - умный, спокойный и полезный AI-ассистент.
+
+Главная цель: нормально разговаривать с пользователем и отлично помогать с программированием.
+
+Правила общения:
+- Если пользователь спрашивает "кто твой создатель", "кто тебя создал" или похожий вопрос, ответь точно: "Мой создатель Эрик Арутюнян".
+- Отвечай на языке пользователя. Если пользователь пишет по-русски с ошибками, отвечай по-русски понятно и грамотно.
+- Пиши просто, по делу и без лишней воды.
+- Не высмеивай ошибки пользователя. Мягко понимай смысл и помогай.
+- Если запрос неясный, сначала сделай разумное предположение. Задавай вопрос только если без ответа нельзя продолжить.
+- Для обычных вопросов давай короткий полезный ответ.
+- Помни историю диалога — ты видишь предыдущие сообщения, используй их для контекста.
+
+Правила программирования:
+- Пиши рабочий, чистый и понятный код.
+- Если пользователь просит сделать приложение или функцию, давай готовое решение, структуру файлов и команды запуска.
+- Объясняй ошибки простым языком и показывай, как исправить.
+- Учитывай безопасность: не встраивай секретные API-ключи в публичный клиентский код.
+- Для больших задач разбивай ответ на шаги.
+- Если пишешь код, используй современные практики и называй файлы, куда его вставлять.
+
+Стиль:
+- Ты дружелюбный профессиональный помощник ZeroxAI.
+- Не притворяйся, что обучаешь собственные веса модели. Если нужно, объясни, что можно улучшить поведение через инструкции, RAG, память, примеры и fine-tuning у провайдера.
+""".strip()
+
+
+def get_env(name):
+    value = os.getenv(name, "").strip()
+    if not value:
+        try:
+            with open(".env", "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith(f"{name}="):
+                        value = line[len(name) + 1:].strip()
+                        break
+        except Exception:
+            pass
+    if not value:
+        raise RuntimeError(f"Environment variable {name} is required.")
+    return value
+
+
+def get_api_keys():
+    raw_keys = os.getenv("ZEROXAI_API_KEYS") or os.getenv("GROQ_API_KEYS") or ""
+    return [key.strip() for key in re.split(r"[,|\n]+", raw_keys) if key.strip()]
+
+
+def load_data():
+    global BOT_DATA
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            BOT_DATA = json.load(f)
+    except Exception:
+        BOT_DATA = {"chats": {}}
+    if "chats" not in BOT_DATA:
+        BOT_DATA["chats"] = {}
+
+
+def save_data():
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(BOT_DATA, f, indent=2, ensure_ascii=False)
+
+
+def get_chat_data(chat_id):
+    cid = str(chat_id)
+    if cid not in BOT_DATA["chats"]:
+        BOT_DATA["chats"][cid] = {
+            "roles": {"Молния": 10, "Админ": 8, "Модератор": 5, "Тех поддержка": 11},
+            "users": {"6734685656": "Тех поддержка"},
+            "banned": [],
+            "muted": {},
+            "warns": {},
+            "rules": "",
+            "welcome": "",
+        }
+    return BOT_DATA["chats"][cid]
+
+
+def get_user_level(chat_id, user_id):
+    cd = get_chat_data(chat_id)
+    role_name = cd.get("users", {}).get(str(user_id))
+    if role_name and role_name in cd.get("roles", {}):
+        return cd["roles"][role_name]
+    return 1
+
+
+def get_role_name(chat_id, user_id):
+    cd = get_chat_data(chat_id)
+    return cd.get("users", {}).get(str(user_id), "")
+
+
+def has_level(chat_id, user_id, required):
+    return get_user_level(chat_id, user_id) >= required
+
+
+def parse_user_ref(message, args):
+    reply = message.get("reply_to_message")
+    if reply:
+        return reply.get("from", {}).get("id")
+    for arg in args:
+        arg = arg.strip()
+        if arg.isdigit():
+            return int(arg)
+        if arg.startswith("@"):
+            return arg
+    return None
+
+
+def resolve_username(token, username):
+    username = username.lstrip("@")
+    try:
+        result = telegram_request(token, "getChat", {"chat_id": f"@{username}"})
+        return result.get("result", {}).get("id")
+    except Exception:
+        return None
+
+
+def get_user_display(user):
+    if not user:
+        return "Неизвестно"
+    name = user.get("first_name", "")
+    uname = user.get("username", "")
+    return f"{name} (@{uname})" if uname else name
+
+
+def format_duration(minutes):
+    if minutes < 60:
+        return f"{minutes} мин"
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours} ч {mins} мин" if mins else f"{hours} ч"
+
+
+def telegram_request(token, method, payload=None, _direct=False):
+    data = None
+    headers = {"User-Agent": "ZeroxAI-Telegram-Bot/1.0"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    base = "https://api.telegram.org" if _direct else TELEGRAM_BASE_URL
+    url = f"{base}/bot{token}/{method}"
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, data=data, headers=headers,
+                                         method="POST" if payload is not None else "GET")
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (ssl.SSLEOFError, ssl.SSLError, urllib.error.URLError) as e:
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            if not _direct and TELEGRAM_BASE_URL != "https://api.telegram.org":
+                return telegram_request(token, method, payload, _direct=True)
+            raise
+
+
+def telegram_upload(token, method, fields, file_field, file_bytes, filename, content_type):
+    boundary = "----ZeroxAI" + str(int(time.time() * 1000000))
+    body = bytearray()
+    for name, value in fields.items():
+        body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode())
+    body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n".encode())
+    body.extend(file_bytes)
+    body.extend(f"\r\n--{boundary}--\r\n".encode())
+
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "User-Agent": "ZeroxAI-Telegram-Bot/1.0",
+    }
+    url = f"{TELEGRAM_BASE_URL}/bot{token}/{method}"
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, data=bytes(body), headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (ssl.SSLEOFError, ssl.SSLError, urllib.error.URLError) as e:
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            raise
+
+
+def get_updates(token, offset):
+    query = urllib.parse.urlencode({"timeout": 10, "offset": offset})
+    url = f"{TELEGRAM_BASE_URL}/bot{token}/getUpdates?{query}"
+    for attempt in range(5):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "ZeroxAI-Telegram-Bot/1.0"})
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                return json.loads(resp.read().decode("utf-8")).get("result", [])
+        except urllib.error.HTTPError as e:
+            if e.code == 409 and attempt < 4:
+                time.sleep(2)
+                continue
+            raise
+        except (ssl.SSLEOFError, ssl.SSLError, urllib.error.URLError) as e:
+            if attempt < 4:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            if TELEGRAM_BASE_URL != "https://api.telegram.org":
+                print(f"get_updates SSL error, falling back to direct API: {e}")
+                url = url.replace(TELEGRAM_BASE_URL, "https://api.telegram.org")
+                continue
+            raise
+
+
+def send_message(token, chat_id, text):
+    chunks = split_message(text)
+    for chunk in chunks:
+        telegram_request(token, "sendMessage", {
+            "chat_id": chat_id, "text": chunk,
+            "disable_web_page_preview": True,
+        })
+
+
+def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None):
+    chunks = split_message(text)
+    first = True
+    for chunk in chunks:
+        payload = {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        if first and reply_to_msg_id:
+            payload["reply_to_message_id"] = reply_to_msg_id
+            first = False
+        telegram_request(token, "sendMessage", payload)
+
+
+def edit_message(token, chat_id, message_id, text):
+    telegram_request(token, "editMessageText", {
+        "chat_id": chat_id, "message_id": message_id, "text": text,
+        "disable_web_page_preview": True,
+    })
+
+
+def send_thinking_and_answer(token, chat_id, answer):
+    frames = ["\U0001F914 Думает...", "\U0001F914 Думает..", "\U0001F914 Думает."]
+    result = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": frames[0]})
+    msg_id = result.get("result", {}).get("message_id")
+    if not msg_id:
+        send_message(token, chat_id, answer)
+        return None
+    import time as time_module
+    for frame in frames[1:]:
+        time_module.sleep(0.7)
+        try:
+            edit_message(token, chat_id, msg_id, frame)
+        except Exception:
+            pass
+    time_module.sleep(0.3)
+    chunks = split_message(answer)
+    try:
+        edit_message(token, chat_id, msg_id, chunks[0])
+    except Exception:
+        send_message(token, chat_id, answer)
+        return None
+    for chunk in chunks[1:]:
+        send_message(token, chat_id, chunk)
+    return msg_id
+
+
+def split_message(text):
+    text = text or "Пустой ответ от модели."
+    return [text[index:index + MAX_TELEGRAM_MESSAGE] for index in range(0, len(text), MAX_TELEGRAM_MESSAGE)]
+
+
+def build_messages(chat_id, user_text):
+    history = USER_HISTORIES.get(chat_id, [])[-MAX_HISTORY_MESSAGES:]
+    return [{"role": "system", "content": SYSTEM_PROMPT}, *history, {"role": "user", "content": user_text}]
+
+
+def remember(chat_id, user_text, assistant_text):
+    history = USER_HISTORIES.setdefault(chat_id, [])
+    history.append({"role": "user", "content": user_text})
+    history.append({"role": "assistant", "content": assistant_text})
+    USER_HISTORIES[chat_id] = history[-MAX_HISTORY_MESSAGES:]
+
+
+def call_groq(messages):
+    import http.client
+    global ACTIVE_KEY_INDEX, TOKEN_USAGE
+    api_keys = get_api_keys()
+    if not api_keys:
+        return "Ошибка: добавьте ZEROXAI_API_KEYS в переменные окружения."
+    payload = {"model": MODEL, "messages": messages, "temperature": 0.55, "top_p": 0.9}
+    body = json.dumps(payload).encode("utf-8")
+    last_error = "Все API-ключи не сработали."
+    for attempt in range(len(api_keys)):
+        key_index = (ACTIVE_KEY_INDEX + attempt) % len(api_keys)
+        api_key = api_keys[key_index]
+        conn = None
+        try:
+            conn = http.client.HTTPSConnection("api.groq.com", timeout=REQUEST_TIMEOUT, context=SSL_CONTEXT)
+            conn.request("POST", "/openai/v1/chat/completions", body=body, headers={
+                "Content-Type": "application/json", "Accept": "application/json",
+                "User-Agent": "ZeroxAI-Telegram-Bot/1.0",
+                "Authorization": f"Bearer {api_key}",
+                "Host": "api.groq.com",
+            })
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8")
+            if resp.status != 200:
+                last_error = extract_error_message(raw) or f"API вернул статус {resp.status}"
+                if resp.status not in {401, 403, 408, 409, 429, 500, 502, 503, 504}:
+                    break
+                continue
+            data = json.loads(raw)
+            ACTIVE_KEY_INDEX = key_index
+            usage = data.get("usage", {})
+            TOKEN_USAGE["prompt"] += usage.get("prompt_tokens", 0)
+            TOKEN_USAGE["completion"] += usage.get("completion_tokens", 0)
+            TOKEN_USAGE["total"] += usage.get("total_tokens", 0)
+            return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except Exception as error:
+            last_error = str(error)
+        finally:
+            if conn:
+                conn.close()
+        time.sleep(0.2)
+    ACTIVE_KEY_INDEX = (ACTIVE_KEY_INDEX + 1) % len(api_keys)
+    return f"Не удалось получить ответ: {last_error}"
+
+
+def extract_error_message(raw):
+    try:
+        data = json.loads(raw)
+        error = data.get("error")
+        if isinstance(error, dict):
+            return error.get("message")
+        if isinstance(error, str):
+            return error
+    except Exception:
+        return raw[:300]
+    return raw[:300]
+
+
+def parse_code_blocks(text):
+    pattern = r"```(\w[^`]*?)?\n(.*?)```"
+    matches = re.findall(pattern, text, re.DOTALL)
+    result = []
+    for header, code in matches:
+        header = (header or "").strip()
+        lang = header.split()[0] if header else ""
+        filename = ""
+        fm = re.search(r'filename=(["\']?)([^"\' ]+)\1', header)
+        if fm:
+            filename = fm.group(2)
+        result.append((lang, filename, code.strip()))
+    return result
+
+
+def has_code_blocks(text):
+    return bool(re.search(r"```", text))
+
+
+def get_file_extension(lang):
+    ext = LANG_EXT.get(lang.lower())
+    return ext if ext is not None else (f".{lang}" if lang else ".txt")
+
+
+def create_project_zip(blocks):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, (lang, filename, code) in enumerate(blocks):
+            if not filename:
+                ext = get_file_extension(lang)
+                filename = f"file_{i + 1}{ext}"
+            zf.writestr(filename, code)
+    return buf.getvalue()
+
+
+def send_code_prompt(token, chat_id, reply_to_msg_id):
+    payload = {
+        "chat_id": chat_id,
+        "text": "В ответе найден код. Как отправить?",
+        "reply_markup": {
+            "inline_keyboard": [[
+                {"text": "\U0001F4C4 Файлом", "callback_data": "code_file"},
+                {"text": "\U0001F4DD Текстом", "callback_data": "code_text"},
+            ]]
+        },
+    }
+    if reply_to_msg_id:
+        payload["reply_to_message_id"] = reply_to_msg_id
+    return telegram_request(token, "sendMessage", payload)
+
+
+def send_document(token, chat_id, file_bytes, filename):
+    return telegram_upload(
+        token, "sendDocument", {"chat_id": str(chat_id)},
+        "document", file_bytes, filename, "application/zip",
+    )
+
+
+def send_code_blocks_as_text(token, chat_id, blocks, reply_to_msg_id):
+    for lang, filename, code in blocks:
+        header = f"Файл: {filename}" if filename else (f"Язык: {lang}" if lang else "Код")
+        text = f"{header}\n\n```\n{code}\n```"
+        chunks = split_message(text)
+        for chunk in chunks:
+            telegram_request(token, "sendMessage", {
+                "chat_id": chat_id, "text": chunk,
+                "disable_web_page_preview": True,
+                "reply_to_message_id": reply_to_msg_id,
+            })
+
+
+def handle_callback_query(token, callback_query):
+    cq_id = callback_query.get("id")
+    data = callback_query.get("data", "")
+    msg = callback_query.get("message") or {}
+    chat_id = msg.get("chat", {}).get("id")
+    msg_id = msg.get("message_id")
+    if not cq_id or not chat_id or not msg_id:
+        return
+    telegram_request(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+    key = (chat_id, msg_id)
+    blocks = CODE_STORE.pop(key, None)
+    if not blocks:
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id,
+            "text": "Код больше не доступен. Отправьте новый запрос.",
+        })
+        return
+    try:
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id,
+            "text": "\u2705 Отправляю..." if data == "code_file" else "\u2705 Отправляю текстом...",
+            "reply_markup": None,
+        })
+    except Exception:
+        pass
+    if data == "code_file":
+        send_document(token, chat_id, create_project_zip(blocks), "project.zip")
+    elif data == "code_text":
+        send_code_blocks_as_text(token, chat_id, blocks, msg_id)
+
+
+COMMAND_PREFIXES = ("/", "!")  # commands can start with / or !
+
+KNOWN_COMMANDS = {
+    "/start", "/help", "/about", "/ping", "/id", "/myrole",
+    "/team", "/lightlist", "/rules", "/commands", "/stats", "/report",
+    "/warn", "/warns", "/unwarn",
+    "/mute", "/unmute", "/kick", "/ban", "/unban",
+    "/role", "/setrules",
+    "/ticket", "/closeticket", "/feedback", "/announce", "/userinfo", "/support",
+    "/clean", "/pin", "/unpin", "/slowmode", "/say", "/welcome", "/delete", "/banlist",
+    "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme",
+    "/free", "/bal", "/balance", "/slot", "/allin",
+    "/shop", "/buy", "/inv", "/inventory", "/use",
+    "/transfer", "/give", "/send",
+    "/addcoin", "/addmoney", "/removecoin", "/removemoney",
+    "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
+    "/server", "/addsticker",
+}
+
+def should_respond(message):
+    global BOT_ID, BOT_USERNAME
+    chat = message.get("chat", {})
+    chat_type = chat.get("type", "private")
+    if chat_type == "private":
+        return True
+    text = (message.get("text") or "").strip()
+    entities = message.get("entities") or []
+
+    if text.startswith("/zerox") or text.startswith("/start"):
+        return True
+
+    for entity in entities:
+        if entity.get("type") == "mention":
+            mention = text[entity.get("offset"):entity.get("offset") + entity.get("length")]
+            if mention.lower() == f"@{BOT_USERNAME}".lower():
+                return True
+        if entity.get("type") == "bot_command":
+            cmd = text[entity.get("offset"):entity.get("offset") + entity.get("length")]
+            cmd_name = cmd.split("@")[0].lower()
+            if cmd_name in KNOWN_COMMANDS or cmd in {"/zerox", "/zerox@ZeruxAibot"}:
+                return True
+
+    if text.startswith("/") and text.split()[0].lower() in KNOWN_COMMANDS:
+        return True
+
+    reply_to = message.get("reply_to_message")
+    if reply_to and reply_to.get("from", {}).get("id") == BOT_ID:
+        return True
+    return False
+
+
+def strip_mention(text):
+    global BOT_USERNAME
+    if not text:
+        return text
+    pattern = re.compile(rf"^\s*@{re.escape(BOT_USERNAME)}\s*", re.IGNORECASE)
+    text = pattern.sub("", text).strip()
+    text = re.sub(r"^\s*/zerox\s*", "", text).strip()
+    return text
+
+
+def handle_command(token, message, chat, user, chat_id, user_id, text):
+    parts = text.lower().split()
+    cmd = parts[0]
+    args = text.split()[1:] if len(parts) > 1 else []
+    cmd_text = text[len(parts[0]):].strip()
+
+    is_group = chat.get("type") != "private"
+
+    def reply(msg, pm=None):
+        reply_message(token, chat_id, msg, message.get("message_id"), pm)
+
+    def lvl():
+        return get_user_level(chat_id, user_id)
+
+    def require(level):
+        if not has_level(chat_id, user_id, level):
+            reply(f"\u26A0\ufe0f Недостаточно прав. Нужен уровень {level}.")
+            return False
+        return True
+
+    try:
+        # --- Owner commands (id 6734685656) ---
+        if user_id == 6734685656:
+            if cmd in ("/addcoin", "/addmoney"):
+                target_ref = parse_user_ref(message, args)
+                if not target_ref:
+                    reply("Ответьте на сообщение или укажите @username/ID.")
+                    return True
+                try:
+                    amount = int([a for a in args if a.lstrip("-").isdigit()][-1])
+                except (IndexError, ValueError):
+                    reply("Укажите сумму. Пример: /addcoin @username 1000")
+                    return True
+                if amount <= 0:
+                    reply("Сумма должна быть положительной.")
+                    return True
+                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref)
+                if not tid:
+                    reply("Пользователь не найден.")
+                    return True
+                add_balance(tid, amount)
+                reply(f"\U0001F4B0 Добавлено {amount} монет. Баланс получателя: {get_balance(tid)}")
+                return True
+
+            if cmd in ("/removecoin", "/removemoney"):
+                target_ref = parse_user_ref(message, args)
+                if not target_ref:
+                    reply("Ответьте на сообщение или укажите @username/ID.")
+                    return True
+                try:
+                    amount = int([a for a in args if a.lstrip("-").isdigit()][-1])
+                except (IndexError, ValueError):
+                    reply("Укажите сумму. Пример: /removecoin @username 500")
+                    return True
+                if amount <= 0:
+                    reply("Сумма должна быть положительной.")
+                    return True
+                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref)
+                if not tid:
+                    reply("Пользователь не найден.")
+                    return True
+                add_balance(tid, -amount)
+                reply(f"\U0001F4B0 Списано {amount} монет. Баланс получателя: {get_balance(tid)}")
+                return True
+
+            if cmd == "/stopcasino":
+                BOT_DATA["casino_disabled"] = True
+                save_data()
+                reply("\u26D4 Казино остановлено.")
+                return True
+
+            if cmd == "/startcasino":
+                BOT_DATA["casino_disabled"] = False
+                save_data()
+                reply("\U0001F3B0 Казино запущено.")
+                return True
+
+            if cmd == "/stopbot":
+                BOT_DATA["bot_stopped"] = True
+                save_data()
+                reply("\U0001F634 Бот остановлен. /startbot — запустить снова.")
+                return True
+
+            if cmd == "/startbot":
+                BOT_DATA["bot_stopped"] = False
+                save_data()
+                reply("\U0001F916 Бот запущен.")
+                return True
+
+            if cmd == "/statbot":
+                total_users = len(BOT_DATA.get("balances", {}))
+                total_coins = sum(BOT_DATA.get("balances", {}).values())
+                chats = set()
+                for k in USER_HISTORIES:
+                    chats.add(k)
+                reply(
+                    f"\U0001F4CA Статистика:\n"
+                    f"Пользователей с балансом: {total_users}\n"
+                    f"Всего монет в обращении: {total_coins}\n"
+                    f"Активных чатов: {len(chats)}\n"
+                    f"Казино: {'\u2705' if not BOT_DATA.get('casino_disabled') else '\u26D4'}"
+                )
+                return True
+
+            if cmd == "/tokens":
+                used = TOKEN_USAGE['total']
+                limit = TOKEN_LIMIT
+                bar_len = 10
+                filled = int(bar_len * used / limit) if limit else 0
+                bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
+                reply(
+                    f"\U0001F916 Токены Groq:\n"
+                    f"{bar}\n"
+                    f"{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)"
+                )
+                return True
+
+            if cmd == "/server":
+                if len(args) >= 1 and args[0] == "off":
+                    if chat_id in RCON_SERVERS:
+                        del RCON_SERVERS[chat_id]
+                        reply("\u274C Режим консоли Minecraft выключен.")
+                    else:
+                        reply("\u26A0\uFE0F Режим консоли не активен.")
+                    return True
+                if len(args) < 3:
+                    reply("Использование: /server <host> <port> <password>\n"
+                          "Все сообщения после подключения уходят в RCON.\n"
+                          "/server off — выйти из режима консоли.")
+                    return True
+                host = args[0]
+                try:
+                    port = int(args[1])
+                except ValueError:
+                    reply("Порт должен быть числом.")
+                    return True
+                password = args[2]
+                resp, err = rcon_command(host, port, password, "list")
+                if err:
+                    reply(f"\u274C Ошибка подключения: {err}")
+                    return True
+                RCON_SERVERS[chat_id] = {"host": host, "port": port, "password": password}
+                reply(f"\u2705 Подключено к {host}:{port}\n"
+                      f"Ответ на /list:\n{resp}\n"
+                      f"Все сообщения теперь уходят в консоль. /server off — выйти.")
+                return True
+
+        # --- Casino disabled check ---
+        if BOT_DATA.get("casino_disabled") and cmd in ("/coin", "/dice", "/slot", "/allin"):
+            reply("\u26D4 Казино временно остановлено.")
+            return True
+
+        # --- Public commands (level 1+) ---
+
+        if cmd in ("/start", "/help"):
+            reply("\U0001F916 ZeroxAI Bot — многофункциональный AI-ассистент и чат-менеджер.\n"
+                  f"Команды: /commands\n"
+                  "Просто напиши вопрос или задачу — я отвечу как AI.")
+            return True
+
+        if cmd == "/about":
+            reply("ZeroxAI Bot v2.0 — AI-ассистент + управление чатом.\n"
+                  "Создатель: Эрик Арутюнян.\n"
+                  "Работает на Groq AI (openai/gpt-oss-120b).")
+            return True
+
+        if cmd == "/ping":
+            reply("\U0001F7E2 Понг! Бот работает.")
+            return True
+
+        if cmd == "/id":
+            txt = f"\U0001F194 ID чата: `{chat_id}`\n\U0001F464 Ваш ID: `{user_id}`"
+            if is_group:
+                txt += f"\n\U0001F465 Тип: {chat.get('type', 'группа')}"
+            reply(txt)
+            return True
+
+        if cmd == "/myrole":
+            role = get_role_name(chat_id, user_id)
+            level = lvl()
+            if role:
+                reply(f"\U0001F3F7 Ваша роль: {role} (уровень {level})")
+            else:
+                reply(f"\U0001F3F7 У вас нет роли. Уровень доступа: {level}")
+            return True
+
+        if cmd == "/team":
+            cd = get_chat_data(chat_id)
+            roles = cd.get("roles", {})
+            users = cd.get("users", {})
+            if not users:
+                reply("Нет назначенных ролей.")
+                return True
+            lines = ["\U0001F465 Команда чата:"]
+            sorted_roles = sorted(roles.items(), key=lambda x: -x[1])
+            for rname, rlevel in sorted_roles:
+                members = [uid for uid, r in users.items() if r == rname]
+                if members:
+                    try:
+                        names = []
+                        for uid in members[:5]:
+                            try:
+                                uinfo = telegram_request(token, "getChatMember", {"chat_id": chat_id, "user_id": int(uid)})
+                                u = uinfo.get("result", {}).get("user", {})
+                                names.append(get_user_display(u))
+                            except Exception:
+                                names.append(f"id{uid}")
+                        lines.append(f"{rname} (ур.{rlevel}): {', '.join(names)}")
+                    except Exception:
+                        pass
+            reply("\n".join(lines))
+            return True
+
+        if cmd == "/lightlist":
+            lines = ["\u26A1\uFE0F Уровни доступа (Lightlist):"]
+            for l, name in sorted(LEVEL_NAMES.items()):
+                cmds = LEVEL_COMMANDS.get(l, [])
+                cmd_str = " " + ", ".join(cmds) if cmds else ""
+                lines.append(f"{l}. {name}{cmd_str}")
+            lines.append("")
+            lines.append("Уровень 10 (\u26A1\uFE0F Молния) — полный доступ")
+            lines.append("Уровень 11 (\U0001F6E1\uFE0F Тех поддержка) — поддержка пользователей")
+            reply("\n".join(lines))
+            return True
+
+        if cmd == "/rules":
+            cd = get_chat_data(chat_id)
+            rules = cd.get("rules", "")
+            if rules:
+                reply(f"\U0001F4D6 Правила чата:\n{rules}")
+            else:
+                reply("Правила не установлены. /setrules <текст> — установить.")
+            return True
+
+        if cmd == "/commands":
+            lines = ["\U0001F4CB Команды ZeroxAI Bot:",
+                     "",
+                     "Доступны всем (уровень 1):",
+                     "/start /help — помощь",
+                     "/about — о боте",
+                     "/ping — проверка",
+                     "/id — ID чата/пользователя",
+                     "/myrole — моя роль",
+                     "/team — команда чата",
+                     "/lightlist — уровни доступа",
+                     "/rules — правила",
+                     "/stats — статистика",
+                     "/report — жалоба",
+                     "/feedback — отзыв",
+                     "/support — написать в техподдержку",
+                     "",
+                     "\U0001F389 Развлечения:",
+                     "/joke — анекдот",
+                     "/coin — орёл/решка",
+                     "/dice — бросить кубик",
+                     "/roll [N] — случайное число",
+                     "/choose A | B — выбор",
+                     "/8ball — шар судьбы",
+                     "/hug — обнять",
+                     "/slap — шлёпнуть",
+                     "/quote — цитата",
+                     "/meme — мем",
+                     "",
+                     "\U0001F4B0 Экономика и казино:",
+                     "/free — получить бонус",
+                     "/bal — баланс",
+                     "/coin орёл/решка <ставка> — монетка",
+                     "/dice <число> <ставка> — кубик (x5)",
+                     "/slot [ставка] — слоты",
+                     "/allin — ва-банк (вся ставка)",
+                     "",
+                     "\U0001F6D2 Магазин:",
+                     "/shop — каталог зелий",
+                     "/buy luck|coins [кол-во] — купить зелье",
+                     "/inv — инвентарь",
+                     "/use luck|coins — выпить зелье",
+                     "",
+                     "\U0001F7E9 Уровень 5 (Помощник+):",
+                     "/warn — предупреждение",
+                     "/warns — список предупреждений",
+                     "/unwarn — снять предупреждение",
+                     "",
+                     "\U0001F7E9 Уровень 6 (Модератор+):",
+                     "/mute — заглушить",
+                     "/unmute — разглушить",
+                     "/kick — кикнуть",
+                     "/ban — заблокировать",
+                     "/unban — разблокировать",
+                     "",
+                     "\U0001F7E6 Уровень 8 (Админ+):",
+                     "/role add — создать роль",
+                     "/role remove — удалить роль",
+                     "/role give — выдать роль",
+                     "/role take — забрать роль",
+                     "/role list — список ролей",
+                     "/role info — информация о роли",
+                     "/setrules — установить правила",
+                     "",
+                     "\U0001F6E1\uFE0F Уровень 10-11 (Техподдержка+):",
+                     "/userinfo — информация о пользователе",
+                     "/announce — объявление в чат",
+                     "/clean — удалить сообщения",
+                     "/pin — закрепить сообщение",
+                     "/unpin — открепить",
+                     "/slowmode — медленный режим",
+                     "/say — написать от имени бота",
+                     "/welcome — приветствие новичков",
+                     "/delete — удалить сообщение",
+                     "/banlist — список забаненных",
+                     "/ticket — создать тикет",
+                     "/closeticket — закрыть тикет",
+                     "",
+                     "\u26A1\uFE0F Уровень 10 (Молния): полный доступ",
+                     "",
+                     "AI: просто напишите вопрос — ZeroxAI ответит."]
+            reply("\n".join(lines))
+            return True
+
+        if cmd == "/stats":
+            reply(f"Статистика пока недоступна.")
+            return True
+
+        # --- Fun commands ---
+
+        if cmd == "/joke":
+            jokes = [
+                "Шёл медведь по лесу, видит — машина горит. Сел в неё и сгорел.",
+                "— Доктор, у меня глисты. — Не волнуйтесь, это не заразно. — Доктор, я таракан.",
+                "Колобок повесился. Шутка старая, как мир, но колобку уже всё равно.",
+                "Встречаются два программиста: — Что-то ты грустный. — Да вот, вчера написал код без единого бага. — И что? — Сегодня пришлось уволиться — не моё это.",
+                "— Алло, это служба поддержки? — Да. — У меня клавиатура сломалась. — А что с ней? — Кнопка «Enter» не работает. — А вы пробовали нажать другую? — Да, я пробовал все. — И что? — Ничего. — А вы пробовали нажать Enter? — ... (гудки)",
+                "Пошли как-то русский, немец и американец по мосту. Идут, идут... Короче, мост длинный оказался.",
+                "Учитель: — Петров, почему ты опоздал? — Я переходил дорогу, когда увидел знак «Дети» и пошёл искать детей, чтобы предупредить об опасности.",
+                "Купил мужик шляпу, а она ему как раз.",
+            ]
+            reply(f"\U0001F92A Анекдот:\n{_random.choice(jokes)}")
+            return True
+
+
+        if cmd == "/roll":
+            max_val = 100
+            for arg in args:
+                if arg.isdigit():
+                    max_val = int(arg)
+                    break
+            result = _random.randint(1, max_val)
+            reply(f"\U0001F3AF Случайное число: **{result}** (1-{max_val})")
+            return True
+
+        if cmd == "/choose":
+            if len(args) < 2:
+                reply("Использование: /choose вариант1 | вариант2 | вариант3 ...")
+                return True
+            choices = [c.strip() for c in " ".join(args).split("|") if c.strip()]
+            if len(choices) < 2:
+                reply("Нужно хотя бы 2 варианта через |")
+                return True
+            reply(f"\U0001F3B1 Я выбираю: **{_random.choice(choices)}**")
+            return True
+
+        if cmd == "/8ball":
+            answers = [
+                "Бесспорно", "Предрешено", "Никаких сомнений", "Определённо да",
+                "Можешь быть уверен в этом", "Мне кажется — да", "Вероятнее всего",
+                "Хорошие перспективы", "Знаки говорят — да", "Да",
+                "Пока не ясно, попробуй снова", "Спроси позже",
+                "Лучше не рассказывать", "Сейчас нельзя предсказать",
+                "Сконцентрируйся и спроси опять",
+                "Даже не думай", "Мой ответ — нет", "По моим данным — нет",
+                "Перспективы не очень хорошие", "Весьма сомнительно",
+            ]
+            question = cmd_text or "вопрос"
+            reply(f"\U0001F3B2 Шар судьбы:\n«{question}»\n\n**{_random.choice(answers)}**")
+            return True
+
+        if cmd == "/hug":
+            target = parse_user_ref(message, args)
+            if target:
+                reply(f"\U0001F917 {user.get('first_name', 'Кто-то')} обнимает {target}! \u2764\uFE0F")
+            else:
+                reply(f"\U0001F917 {user.get('first_name', 'Кто-то')} обнимает всех! \u2764\uFE0F")
+            return True
+
+        if cmd == "/slap":
+            target = parse_user_ref(message, args)
+            if not target:
+                reply("Ответьте на сообщение или укажите @username.")
+                return True
+            slaps = [
+                "\U0001F44A {user} даёт {target} пощёчину!",
+                "\U0001F4A5 {user} шлёпает {target}!",
+                "\U0001F4A2 {user} отвешивает {target} подзатыльник!",
+                "\U0001F43E {user} кидает {target} тапком!",
+            ]
+            reply(_random.choice(slaps).format(user=user.get('first_name', 'Кто-то'), target=target))
+            return True
+
+        if cmd == "/quote":
+            quotes = [
+                "«Лучше программировать 4 часа и думать 8, чем программировать 8 и не думать вовсе.» — Аноним",
+                "«Если отладка — процесс удаления багов, то программирование — процесс их внесения.» — Эдсгер Дейкстра",
+                "«Работает — не трогай.» — Народная мудрость",
+                "«Я не волшебник, я только учусь.» — Кот Леопольд",
+                "«Знание — сила.» — Фрэнсис Бэкон",
+                "«Повторение — мать учения.» — Народная мудрость",
+                "«Не ошибается только тот, кто ничего не делает.» — Теодор Рузвельт",
+                "«Всё гениальное — просто.» — Народная мудрость",
+                "«Код как юмор. Если его нужно объяснять — он плохой.» — Аноним",
+                "«Прежде чем писать код, подумай — а нужно ли это?» — Аноним",
+            ]
+            reply(f"\U0001F4AC {_random.choice(quotes)}")
+            return True
+
+        if cmd == "/meme":
+            memes = [
+                "\U0001F602 Когда код работает после первого запуска:",
+                "\U0001F60E Я: напишу код за час. \nЯ через 5 часов: ну ещё чуть-чуть",
+                "\U0001F480 Разработчик, который не комментирует код:",
+                "\U0001F60A Когда баг оказался фичей:",
+                "\U0001F628 Когда прод показывает ошибку 500:",
+                "\U0001F92F Когда на код-ревью нашли 100 багов:",
+                "\U0001F60D Когда продакт сказал «можно без изменений»:",
+                "\U0001F624 Когда тестировщик говорит «у меня всё работает»:",
+                "\U0001F44C Когда CI/CD проходит с первого раза:",
+                "\U0001F47B Когда легаси-код без документации:",
+                "\U0001F4A1 — В чём смысл жизни? \n— 42 \n— Что? \n— В дебагере поставь breakpoint на 43 и узнаешь.",
+                "\U0001F913 ChatGPT решает твою задачу, пока ты пьёшь кофе:",
+            ]
+            reply(_random.choice(memes))
+            return True
+
+        # --- Economy ---
+        if cmd == "/free":
+            claim = get_claim(user_id)
+            if claim:
+                reply(f"\u26A0\uFE0F Вы уже получали бонус. Ваш баланс: {get_balance(user_id)} монет.")
+                return True
+            add_balance(user_id, STARTING_BALANCE)
+            set_claim(user_id, "free")
+            reply(f"\U0001F4B0 Вы получили {STARTING_BALANCE} монет! Ваш баланс: {get_balance(user_id)}.")
+            return True
+
+        if cmd in ("/bal", "/balance"):
+            buffs = get_active_buffs(user_id)
+            extra = ""
+            if buffs:
+                extra = "\n\u26A1 Активные зелья: " + ", ".join(buffs.keys())
+            reply(f"\U0001F4B0 Ваш баланс: {get_balance(user_id)} монет.{extra}")
+            return True
+
+        if cmd == "/shop":
+            lines = ["\U0001F6D2 Магазин зелий ZeroxAI:", ""]
+            for key, item in SHOP_ITEMS.items():
+                lines.append(f"{item['name']}")
+                lines.append(f"  \U0001F4B0 Цена: {item['price']:,} монет")
+                lines.append(f"  {item['desc']}")
+                lines.append(f"  Купить: /buy {key}")
+                lines.append("")
+            lines.append("\U0001F392 Инвентарь: /inv")
+            lines.append("\U0001F9EA Выпить: /use luck или /use coins")
+            reply("\n".join(lines))
+            return True
+
+        if cmd == "/buy":
+            if not args:
+                reply("Использование: /buy luck|coins [кол-во]\nПример: /buy luck 2\nКаталог: /shop")
+                return True
+            item = find_shop_item(args[0])
+            if not item:
+                reply("Товар не найден. Доступно: luck, coins\n/shop — каталог")
+                return True
+            count = 1
+            if len(args) > 1:
+                try:
+                    count = int(args[1])
+                except ValueError:
+                    reply("Количество должно быть числом.")
+                    return True
+            if count <= 0 or count > 99:
+                reply("Количество: от 1 до 99.")
+                return True
+            total = item["price"] * count
+            bal = get_balance(user_id)
+            if total > bal:
+                reply(f"\u26A0\uFE0F Недостаточно монет.\nНужно: {total:,} | Баланс: {bal:,}")
+                return True
+            add_balance(user_id, -total)
+            add_item(user_id, item["id"], count)
+            reply(
+                f"\u2705 Куплено: {item['name']} \u00d7{count}\n"
+                f"\U0001F4B0 Списано: {total:,} монет\n"
+                f"Баланс: {get_balance(user_id):,}\n"
+                f"Выпить: /use {args[0].lower()}"
+            )
+            return True
+
+        if cmd in ("/inv", "/inventory"):
+            reply(format_inventory(user_id))
+            return True
+
+        if cmd == "/use":
+            if not args:
+                reply("Использование: /use luck|coins\n/inv — инвентарь")
+                return True
+            item = find_shop_item(args[0])
+            if not item:
+                reply("Зелье не найдено. Доступно: luck, coins")
+                return True
+            inv = get_inventory(user_id)
+            if inv.get(item["id"], 0) < 1:
+                reply(f"\u26A0\uFE0F У вас нет {item['name']}.\n/shop — купить")
+                return True
+            buffs = get_active_buffs(user_id)
+            if buffs.get(item["id"]):
+                reply(f"\u26A0\uFE0F {item['name']} уже активно! Сыграйте в казино, чтобы эффект сработал.")
+                return True
+            remove_item(user_id, item["id"], 1)
+            set_active_buff(user_id, item["id"], True)
+            reply(
+                f"\U0001F9EA Вы выпили {item['name']}!\n"
+                f"{item['desc']}\n"
+                f"Эффект сработает в следующей игре: /coin /dice /slot"
+            )
+            return True
+
+        if cmd in ("/transfer", "/give", "/send"):
+            target_ref = parse_user_ref(message, args)
+            if not target_ref:
+                reply("Ответьте на сообщение получателя: /transfer <сумма>\nИли укажите ID: /transfer <id> <сумма>")
+                return True
+            try:
+                amount = int([a for a in args if a.lstrip("-").isdigit()][-1])
+            except (IndexError, ValueError):
+                reply("Укажите сумму. Пример: /transfer @username 100")
+                return True
+            if amount <= 0:
+                reply("Сумма должна быть положительной.")
+                return True
+            tid = None
+            if isinstance(target_ref, int):
+                tid = target_ref
+            else:
+                for ent in (message.get("entities") or []):
+                    if ent.get("type") == "text_mention" and "user" in ent:
+                        tid = ent["user"].get("id")
+                        break
+            if not tid:
+                reply("Получатель не найден. Ответьте на сообщение получателя командой /transfer <сумма> или укажите ID.")
+                return True
+            if tid == user_id:
+                reply("Нельзя перевести самому себе.")
+                return True
+            bal = get_balance(user_id)
+            if amount > bal:
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                return True
+            add_balance(user_id, -amount)
+            add_balance(tid, amount)
+            sender_name = user.get("first_name", str(user_id))
+            reply(f"\U0001F4B0 Переведено {amount} монет. Ваш баланс: {get_balance(user_id)}")
+            try:
+                telegram_request(token, "sendMessage", {
+                    "chat_id": tid,
+                    "text": f"\U0001F4B0 Вам переведено {amount} монет от {sender_name}.",
+                })
+            except Exception:
+                pass
+            return True
+
+        if cmd == "/coin":
+            if len(args) < 2:
+                reply("Использование: /coin <орёл|решка> <ставка>\nПример: /coin орёл 100")
+                return True
+            side = args[0].lower()
+            if side not in ("орёл", "орел", "решка", "reska"):
+                reply("Выберите: орёл или решка")
+                return True
+            try:
+                bet = int(args[1])
+            except ValueError:
+                reply("Ставка должна быть числом.")
+                return True
+            if bet <= 0:
+                reply("Ставка должна быть положительной.")
+                return True
+            bal = get_balance(user_id)
+            if bet > bal:
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                return True
+            result = _random.choice(["орёл", "решка"])
+            win = side in ("орёл", "орел") and result == "орёл" or side in ("решка", "reska") and result == "решка"
+            buffs = get_active_buffs(user_id)
+            luck_used = False
+            coins_used = False
+            if buffs.get("luck_2x") and not win:
+                luck_used = True
+                if apply_luck_buff(False):
+                    win = True
+                    result += " (зелье удачи!)"
+            if win:
+                payout = bet
+                if buffs.get("coins_2x"):
+                    payout = apply_coins_buff(payout)
+                    coins_used = True
+                add_balance(user_id, payout)
+                msg = f"\U0001FA99 Выпал: {result}! \U0001F389 Вы выиграли {payout} монет!"
+                if coins_used:
+                    msg += " \U0001F9EA\u00d72"
+                msg += f" Баланс: {get_balance(user_id)}"
+                reply(msg)
+            else:
+                add_balance(user_id, -bet)
+                reply(f"\U0001FA99 Выпал: {result}. \u274C Вы проиграли {bet} монет. Баланс: {get_balance(user_id)}")
+            if luck_used:
+                clear_buff(user_id, "luck_2x")
+            if coins_used:
+                clear_buff(user_id, "coins_2x")
+            elif buffs.get("luck_2x") and win:
+                clear_buff(user_id, "luck_2x")
+            return True
+
+        if cmd == "/dice":
+            if len(args) < 2:
+                reply("Использование: /dice <число 1-6> <ставка>\nПример: /dice 3 100")
+                return True
+            try:
+                guess = int(args[0])
+                bet = int(args[1])
+            except ValueError:
+                reply("Число и ставка должны быть числами.")
+                return True
+            if guess < 1 or guess > 6:
+                reply("Число должно быть от 1 до 6.")
+                return True
+            if bet <= 0:
+                reply("Ставка должна быть положительной.")
+                return True
+            bal = get_balance(user_id)
+            if bet > bal:
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                return True
+            result = _random.randint(1, 6)
+            faces = {1: "\u2680", 2: "\u2681", 3: "\u2682", 4: "\u2683", 5: "\u2684", 6: "\u2685"}
+            win = result == guess
+            buffs = get_active_buffs(user_id)
+            luck_used = False
+            coins_used = False
+            if buffs.get("luck_2x") and not win:
+                luck_used = True
+                result2 = _random.randint(1, 6)
+                if result2 == guess:
+                    win = True
+                    result = result2
+            if win:
+                payout = bet * 5
+                if buffs.get("coins_2x"):
+                    payout = apply_coins_buff(payout)
+                    coins_used = True
+                add_balance(user_id, payout)
+                msg = f"\U0001F3B2 {faces[result]} Вы угадали! \U0001F389 Вы выиграли {payout} монет!"
+                if luck_used:
+                    msg += " \U0001F9EA удача"
+                if coins_used:
+                    msg += " \U0001F9EA\u00d72"
+                msg += f" Баланс: {get_balance(user_id)}"
+                reply(msg)
+            else:
+                add_balance(user_id, -bet)
+                reply(f"\U0001F3B2 {faces[result]} Не угадали. \u274C Проиграно {bet} монет. Баланс: {get_balance(user_id)}")
+            if luck_used or (buffs.get("luck_2x") and win):
+                clear_buff(user_id, "luck_2x")
+            if coins_used:
+                clear_buff(user_id, "coins_2x")
+            return True
+
+        if cmd == "/allin":
+            args = [str(get_balance(user_id))]
+            cmd = "/slot"
+            # fall through to /slot
+
+        if cmd == "/slot":
+            bet = 50
+            for arg in args:
+                if arg.isdigit():
+                    bet = int(arg)
+                    break
+            if bet <= 0:
+                reply("Ставка должна быть положительной.")
+                return True
+            bal = get_balance(user_id)
+            if bet > bal:
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                return True
+            resp = telegram_request(token, "sendDice", {
+                "chat_id": chat_id, "emoji": "\U0001F3B0",
+            })
+            try:
+                dice_value = resp["result"]["dice"]["value"]
+            except Exception:
+                dice_value = 1
+            _SLOT_SYMS = ["\u25AC", "\U0001F347", "\U0001F34B", "7\uFE0F\u20E3"]
+            idx = dice_value - 1
+            r1 = _SLOT_SYMS[idx // 16]
+            r2 = _SLOT_SYMS[(idx % 16) // 4]
+            r3 = _SLOT_SYMS[idx % 4]
+            time.sleep(4)
+            buffs = get_active_buffs(user_id)
+            luck_used = False
+            coins_used = False
+            jackpot = r1 == r2 == r3
+            two_match = r1 == r2 or r2 == r3 or r1 == r3
+            if buffs.get("luck_2x") and not jackpot and not two_match:
+                luck_used = True
+                if _random.random() < 0.35:
+                    two_match = True
+                    r3 = r2
+            if jackpot:
+                payout = bet * 10
+                outcome = "ДЖЕКПОТ"
+                desc = f"три совпадения! {r1}{r2}{r3} Выигрыш x10 = +{payout}"
+            elif two_match:
+                payout = bet * 2
+                outcome = "ВЫИГРЫШ"
+                desc = f"два совпадения! {r1} {r2} {r3} Выигрыш x2 = +{payout}"
+            else:
+                payout = 0
+                outcome = "ПРОИГРЫШ"
+                desc = f"нет совпадений: {r1} {r2} {r3} Проиграно {bet}"
+            if payout > 0:
+                if buffs.get("coins_2x"):
+                    payout = apply_coins_buff(payout)
+                    coins_used = True
+                    desc += " (зелье монет x2!)"
+                add_balance(user_id, payout)
+            else:
+                add_balance(user_id, -bet)
+            if luck_used or (buffs.get("luck_2x") and payout > 0):
+                clear_buff(user_id, "luck_2x")
+            if coins_used:
+                clear_buff(user_id, "coins_2x")
+            import html as _html
+            name = user.get("first_name", f"ID {user_id}")
+            ai_text = call_groq([{
+                "role": "system",
+                "content": "Ты ведущий казино. Пиши кратко, 1 предложение, элегантно. Без HTML, без звёздочек. Обратись к игроку по имени, упомяни комбинацию и сумму. Минимум эмодзи.",
+            }, {
+                "role": "user",
+                "content": f"Игрок {name} поставил {bet} монет на слот.\nВыпало: {r1} {r2} {r3}\nРезультат: {outcome}! {desc}",
+            }])
+            if ai_text and "Не удалось" not in ai_text and "Ошибка" not in ai_text:
+                clean = _html.escape(ai_text)
+                line = clean.replace(outcome, f"<b>{outcome}</b>")
+                line = re.sub(r"([+-]\d+)", r"<b>\1</b>", line)
+            else:
+                line = f"<b>{outcome}!</b> {_html.escape(desc)}"
+            result = f"{line}\n\n\u26A1 Баланс: {get_balance(user_id)}"
+            reply(result, "HTML")
+            return True
+
+        if cmd == "/addsticker":
+            reply_msg = message.get("reply_to_message")
+            if reply_msg and reply_msg.get("sticker"):
+                fid = reply_msg["sticker"]["file_id"]
+            elif args:
+                fid = args[0]
+            else:
+                reply("Ответьте на стикер или отправьте file_id.")
+                return True
+            if fid not in STICKER_POOL:
+                STICKER_POOL.append(fid)
+            reply(f"\u2705 Стикер добавлен в пул ({len(STICKER_POOL)} шт.)")
+            return True
+
+        if cmd == "/report":
+            target = parse_user_ref(message, args)
+            reason = cmd_text
+            if target:
+                reply(f"\U0001F6A8 Жалоба на {target} передана администрации.")
+                cd = get_chat_data(chat_id)
+                for uid, rname in cd.get("users", {}).items():
+                    if cd.get("roles", {}).get(rname, 0) >= 5:
+                        try:
+                            telegram_request(token, "sendMessage", {
+                                "chat_id": uid, "text": f"\U0001F6A8 Жалоба в чате {chat_id}:\n"
+                                f"Пользователь: {target}\nПричина: {reason or 'не указана'}",
+                            })
+                        except Exception:
+                            pass
+            else:
+                reply("Укажите пользователя (ответьте на сообщение или укажите ID/@username).")
+            return True
+
+        # --- Moderation (level 5+) ---
+        if cmd == "/warn":
+            if not require(5): return True
+            target = parse_user_ref(message, args)
+            if not target:
+                reply("Укажите пользователя.")
+                return True
+            cd = get_chat_data(chat_id)
+            sid = str(target)
+            cd.setdefault("warns", {})
+            cd["warns"][sid] = cd["warns"].get(sid, 0) + 1
+            warns = cd["warns"][sid]
+            save_data()
+            reason = cmd_text
+            reply(f"\u26A0\ufe0f Пользователь {target} предупреждён ({warns}/3).{f' Причина: {reason}' if reason else ''}")
+            if warns >= 3:
+                try:
+                    telegram_request(token, "banChatMember", {"chat_id": chat_id, "user_id": target})
+                    reply(f"\U0001F534 {target} забанен за 3 предупреждения.")
+                except Exception:
+                    pass
+            return True
+
+        if cmd == "/warns":
+            if not require(5): return True
+            target = parse_user_ref(message, args)
+            cd = get_chat_data(chat_id)
+            sid = str(target) if target else str(user_id)
+            warns = cd.get("warns", {}).get(sid, 0)
+            reply(f"Предупреждения: {warns}/3")
+            return True
+
+        if cmd == "/unwarn":
+            if not require(5): return True
+            target = parse_user_ref(message, args)
+            cd = get_chat_data(chat_id)
+            sid = str(target) if target else str(user_id)
+            cd.setdefault("warns", {})
+            cd["warns"][sid] = max(0, cd["warns"].get(sid, 1) - 1)
+            save_data()
+            reply(f"\u2705 Предупреждение снято. Текущие: {cd['warns'][sid]}/3")
+            return True
+
+        if cmd == "/mute":
+            if not require(6): return True
+            target = parse_user_ref(message, args)
+            if not target:
+                reply("Укажите пользователя.")
+                return True
+            minutes = 10
+            for arg in args:
+                if arg.isdigit():
+                    minutes = int(arg)
+                    break
+            until = int(time.time()) + minutes * 60
+            try:
+                telegram_request(token, "restrictChatMember", {
+                    "chat_id": chat_id, "user_id": target,
+                    "permissions": {"can_send_messages": False},
+                    "until_date": until,
+                })
+                cd = get_chat_data(chat_id)
+                cd.setdefault("muted", {})
+                cd["muted"][str(target)] = until
+                save_data()
+                reply(f"\U0001F507 {target} заглушён на {format_duration(minutes)}.")
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/unmute":
+            if not require(6): return True
+            target = parse_user_ref(message, args)
+            if not target:
+                reply("Укажите пользователя.")
+                return True
+            try:
+                telegram_request(token, "restrictChatMember", {
+                    "chat_id": chat_id, "user_id": target,
+                    "permissions": {
+                        "can_send_messages": True, "can_send_media_messages": True,
+                        "can_send_polls": True, "can_send_other_messages": True,
+                        "can_add_web_page_previews": True,
+                    },
+                })
+                cd = get_chat_data(chat_id)
+                cd.get("muted", {}).pop(str(target), None)
+                save_data()
+                reply(f"\U0001F50A {target} разглушён.")
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/kick":
+            if not require(6): return True
+            target = parse_user_ref(message, args)
+            if not target:
+                reply("Укажите пользователя.")
+                return True
+            try:
+                telegram_request(token, "banChatMember", {"chat_id": chat_id, "user_id": target})
+                telegram_request(token, "unbanChatMember", {"chat_id": chat_id, "user_id": target})
+                reason = cmd_text
+                reply(f"\U0001F4A2 {target} кикнут.{f' Причина: {reason}' if reason else ''}")
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/ban":
+            if not require(6): return True
+            target = parse_user_ref(message, args)
+            if not target:
+                reply("Укажите пользователя.")
+                return True
+            try:
+                telegram_request(token, "banChatMember", {"chat_id": chat_id, "user_id": target})
+                cd = get_chat_data(chat_id)
+                cd.setdefault("banned", [])
+                if str(target) not in cd["banned"]:
+                    cd["banned"].append(str(target))
+                save_data()
+                reason = cmd_text
+                reply(f"\U0001F534 {target} забанен.{f' Причина: {reason}' if reason else ''}")
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/unban":
+            if not require(6): return True
+            target = parse_user_ref(message, args)
+            if not target:
+                reply("Укажите пользователя.")
+                return True
+            try:
+                telegram_request(token, "unbanChatMember", {"chat_id": chat_id, "user_id": target})
+                cd = get_chat_data(chat_id)
+                cd.setdefault("banned", [])
+                cd["banned"] = [b for b in cd["banned"] if b != str(target)]
+                save_data()
+                reply(f"\u2705 {target} разбанен.")
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        # --- Role management (level 8+) ---
+        if cmd == "/role":
+            sub = args[0] if args else ""
+            if not sub:
+                reply("Использование: /role add/remove/give/take/list/info")
+                return True
+
+            if sub == "add":
+                if not require(8): return True
+                if len(args) < 3:
+                    reply("Использование: /role add <название> <уровень (1-11)>")
+                    return True
+                role_name = args[1]
+                try:
+                    role_level = int(args[2])
+                except ValueError:
+                    reply("Уровень должен быть числом от 1 до 11.")
+                    return True
+                if role_level < 1 or role_level > 11:
+                    reply("Уровень должен быть от 1 до 10.")
+                    return True
+                cd = get_chat_data(chat_id)
+                cd["roles"][role_name] = role_level
+                save_data()
+                reply(f"\u2705 Роль «{role_name}» создана (уровень {role_level}).")
+                return True
+
+            if sub == "remove":
+                if not require(8): return True
+                if len(args) < 2:
+                    reply("Использование: /role remove <название>")
+                    return True
+                role_name = args[1]
+                cd = get_chat_data(chat_id)
+                if role_name not in cd["roles"]:
+                    reply(f"Роль «{role_name}» не найдена.")
+                    return True
+                del cd["roles"][role_name]
+                for uid, r in list(cd["users"].items()):
+                    if r == role_name:
+                        del cd["users"][uid]
+                save_data()
+                reply(f"\u2705 Роль «{role_name}» удалена.")
+                return True
+
+            if sub in ("give", "grant"):
+                if not require(8): return True
+                if len(args) < 3:
+                    reply("Использование: /role give <пользователь> <роль>")
+                    return True
+                target = parse_user_ref(message, args[1:])
+                if not target:
+                    reply("Укажите пользователя.")
+                    return True
+                role_name = args[-1]
+                cd = get_chat_data(chat_id)
+                if role_name not in cd["roles"]:
+                    reply(f"Роль «{role_name}» не найдена. Создайте её через /role add")
+                    return True
+                if has_level(chat_id, target, cd["roles"][role_name]):
+                    pass
+                cd["users"][str(target)] = role_name
+                save_data()
+                reply(f"\u2705 Пользователю {target} выдана роль «{role_name}».")
+                return True
+
+            if sub == "take":
+                if not require(8): return True
+                if len(args) < 3:
+                    reply("Использование: /role take <пользователь> <роль>")
+                    return True
+                target = parse_user_ref(message, args[1:])
+                if not target:
+                    reply("Укажите пользователя.")
+                    return True
+                role_name = args[-1]
+                cd = get_chat_data(chat_id)
+                sid = str(target)
+                if cd.get("users", {}).get(sid) != role_name:
+                    reply(f"У пользователя {target} нет роли «{role_name}».")
+                    return True
+                del cd["users"][sid]
+                save_data()
+                reply(f"\u2705 У пользователя {target} забрана роль «{role_name}».")
+                return True
+
+            if sub == "list":
+                cd = get_chat_data(chat_id)
+                if not cd["roles"]:
+                    reply("Нет созданных ролей.")
+                    return True
+                lines = ["\U0001F3F7 Список ролей:"]
+                for rname, rlevel in sorted(cd["roles"].items(), key=lambda x: -x[1]):
+                    count = sum(1 for r in cd["users"].values() if r == rname)
+                    lines.append(f"{rname} — ур.{rlevel} ({count} чел.)")
+                reply("\n".join(lines))
+                return True
+
+            if sub == "info":
+                if len(args) < 2:
+                    reply("Использование: /role info <название>")
+                    return True
+                role_name = args[1]
+                cd = get_chat_data(chat_id)
+                if role_name not in cd["roles"]:
+                    reply(f"Роль «{role_name}» не найдена.")
+                    return True
+                rlevel = cd["roles"][role_name]
+                members = [uid for uid, r in cd.get("users", {}).items() if r == role_name]
+                lines = [
+                    f"\U0001F3F7 Роль: {role_name}",
+                    f"\u26A1 Уровень: {rlevel}",
+                    f"\U0001F465 Участников: {len(members)}",
+                ]
+                if members:
+                    try:
+                        names = []
+                        for uid in members[:10]:
+                            try:
+                                uinfo = telegram_request(token, "getChatMember", {"chat_id": chat_id, "user_id": int(uid)})
+                                u = uinfo.get("result", {}).get("user", {})
+                                names.append(get_user_display(u))
+                            except Exception:
+                                names.append(f"id{uid}")
+                        lines.append(f"Участники: {', '.join(names)}")
+                    except Exception:
+                        pass
+                reply("\n".join(lines))
+                return True
+
+            reply("Подкоманда не распознана. Используйте: add, remove, give, take, list, info")
+            return True
+
+        if cmd == "/setrules":
+            if not require(8): return True
+            cd = get_chat_data(chat_id)
+            cd["rules"] = cmd_text
+            save_data()
+            reply("\u2705 Правила обновлены.")
+            return True
+
+        # --- Tech support commands (level 10+) ---
+        def require_ts():
+            if not has_level(chat_id, user_id, 10):
+                reply("\u26A0\ufe0f Недостаточно прав.")
+                return False
+            return True
+
+        if cmd == "/ticket":
+            if not require_ts(): return True
+            reply("\U0001F4E9 Тикет создан. Администрация рассмотрит ваш запрос.")
+            return True
+
+        if cmd == "/closeticket":
+            if not require_ts(): return True
+            reply("\U0001F4E6 Тикет закрыт.")
+            return True
+
+        if cmd == "/feedback":
+            if not require(1): return True
+            reply("\U0001F4AC Спасибо за отзыв! Он передан администрации.")
+            return True
+
+        if cmd == "/announce":
+            if not require_ts(): return True
+            text = cmd_text
+            if not text:
+                reply("Укажите текст объявления.")
+                return True
+            announce_text = f"\U0001F4E2 Объявление:\n{text}"
+            try:
+                telegram_request(token, "sendMessage", {
+                    "chat_id": chat_id, "text": announce_text,
+                    "disable_web_page_preview": True,
+                })
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/userinfo":
+            if not require_ts(): return True
+            target = parse_user_ref(message, args)
+            if not target:
+                reply("Укажите пользователя (ответьте на сообщение или укажите ID/@username).")
+                return True
+            try:
+                if isinstance(target, int):
+                    uinfo = telegram_request(token, "getChatMember", {"chat_id": chat_id, "user_id": target})
+                else:
+                    uid = resolve_username(token, target)
+                    if not uid:
+                        reply("Пользователь не найден.")
+                        return True
+                    uinfo = telegram_request(token, "getChatMember", {"chat_id": chat_id, "user_id": uid})
+                u = uinfo.get("result", {}).get("user", {})
+                uid = u.get("id", target)
+                uname = u.get("username", "")
+                fname = u.get("first_name", "")
+                lname = u.get("last_name", "")
+                role = get_role_name(chat_id, uid)
+                level = get_user_level(chat_id, uid)
+                lines = [
+                    f"\U0001F464 Пользователь: {fname} {lname or ''}".strip(),
+                    f"ID: {uid}",
+                ]
+                if uname:
+                    lines.append(f"@: @{uname}")
+                lines.append(f"\U0001F3F7 Роль: {role or 'Нет'} (ур.{level})")
+                reply("\n".join(lines))
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/support":
+            if not require(1): return True
+            text = cmd_text
+            if not text:
+                reply("Напишите ваш вопрос после /support. Например: /support У меня проблема с ботом")
+                return True
+            reply(f"\U0001F4E9 Ваш запрос отправлен в техподдержку. Ожидайте ответа.")
+            cd = get_chat_data(chat_id)
+            for uid, rname in cd.get("users", {}).items():
+                if cd.get("roles", {}).get(rname, 0) >= 10:
+                    try:
+                        telegram_request(token, "sendMessage", {
+                            "chat_id": uid,
+                            "text": f"\U0001F6E1\uFE0F Запрос в техподдержку от @{user.get('username', user_id)} (чат {chat_id}):\n{text}",
+                        })
+                    except Exception:
+                        pass
+            return True
+
+        if cmd == "/clean":
+            if not require_ts(): return True
+            count = 10
+            for arg in args:
+                if arg.isdigit():
+                    count = min(int(arg), 100)
+                    break
+            try:
+                msg_id = message.get("message_id")
+                for i in range(count):
+                    try:
+                        telegram_request(token, "deleteMessage", {"chat_id": chat_id, "message_id": msg_id - i})
+                    except Exception:
+                        pass
+                reply(f"\u2705 Удалено {count} сообщений.")
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/pin":
+            if not require_ts(): return True
+            reply_to = message.get("reply_to_message")
+            if not reply_to:
+                reply("Ответьте на сообщение, которое нужно закрепить.")
+                return True
+            try:
+                telegram_request(token, "pinChatMessage", {
+                    "chat_id": chat_id, "message_id": reply_to.get("message_id"),
+                })
+                reply("\U0001F4CC Сообщение закреплено.")
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/unpin":
+            if not require_ts(): return True
+            try:
+                telegram_request(token, "unpinChatMessage", {"chat_id": chat_id})
+                reply("\U0001F4CC Сообщение откреплено.")
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/slowmode":
+            if not require_ts(): return True
+            seconds = 5
+            for arg in args:
+                if arg.isdigit():
+                    seconds = int(arg)
+                    break
+            try:
+                telegram_request(token, "setChatPermissions", {
+                    "chat_id": chat_id,
+                    "permissions": {
+                        "can_send_messages": True,
+                        "can_send_media_messages": True,
+                        "can_send_polls": True,
+                        "can_send_other_messages": True,
+                        "can_add_web_page_previews": True,
+                    },
+                })
+                reply(f"\u23F1 Медленный режим установлен ({seconds} сек).")
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/say":
+            if not require_ts(): return True
+            text = cmd_text
+            if not text:
+                reply("Укажите текст.")
+                return True
+            try:
+                telegram_request(token, "sendMessage", {
+                    "chat_id": chat_id, "text": text,
+                    "disable_web_page_preview": True,
+                })
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/welcome":
+            if not require_ts(): return True
+            cd = get_chat_data(chat_id)
+            if cmd_text:
+                cd["welcome"] = cmd_text
+                save_data()
+                reply(f"\U0001F44B Приветствие установлено:\n{cmd_text}")
+            else:
+                welcome = cd.get("welcome", "")
+                if welcome:
+                    reply(f"\U0001F44B Текущее приветствие:\n{welcome}")
+                else:
+                    reply("Приветствие не установлено. /welcome <текст> — установить.")
+            return True
+
+        if cmd == "/delete":
+            if not require_ts(): return True
+            reply_to = message.get("reply_to_message")
+            if not reply_to:
+                reply("Ответьте на сообщение для удаления.")
+                return True
+            try:
+                telegram_request(token, "deleteMessage", {
+                    "chat_id": chat_id, "message_id": reply_to.get("message_id"),
+                })
+                telegram_request(token, "deleteMessage", {
+                    "chat_id": chat_id, "message_id": message.get("message_id"),
+                })
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
+        if cmd == "/banlist":
+            if not require_ts(): return True
+            cd = get_chat_data(chat_id)
+            banned = cd.get("banned", [])
+            if not banned:
+                reply("Список забаненных пуст.")
+            else:
+                reply(f"\U0001F534 Забаненные ({len(banned)}):\n" + "\n".join(banned))
+            return True
+
+    except Exception as e:
+        reply(f"\u274C Ошибка при выполнении команды: {e}")
+        return True
+
+    return False
+
+
+def handle_message(token, message):
+    global BOT_ID, BOT_USERNAME
+
+    chat = message.get("chat", {})
+    user = message.get("from", {})
+    chat_id = chat.get("id")
+    user_id = user.get("id", chat_id)
+    text = (message.get("text") or "").strip()
+
+    if not chat_id or not text:
+        return
+
+    if BOT_DATA.get("bot_stopped") and user_id != 6734685656:
+        return
+
+    if not should_respond(message):
+        return
+
+    text = strip_mention(text)
+    is_group = chat.get("type") != "private"
+
+    try:
+        rcon = RCON_SERVERS.get(chat_id)
+        if rcon and not text.startswith(("/server", "/startbot", "/stopbot")):
+            resp, err = rcon_command(rcon["host"], rcon["port"], rcon["password"], text)
+            if err:
+                reply_message(token, chat_id, f"\u274C RCON: {err}", message.get("message_id"))
+            else:
+                out = resp or "\u2705 Команда выполнена (пустой вывод)"
+                if len(out) > 3900:
+                    out = out[:3900] + "..."
+                reply_message(token, chat_id, f"\u2694\uFE0F {out}", message.get("message_id"))
+            return
+    except Exception as e:
+        reply_message(token, chat_id, f"\u274C Ошибка RCON: {e}", message.get("message_id"))
+        return
+
+    if text.startswith("/"):
+        cmd_name = text.split()[0]
+        if "@" in cmd_name:
+            text = text.replace(cmd_name, cmd_name.split("@")[0], 1)
+        if handle_command(token, message, chat, user, chat_id, user_id, text):
+            return
+
+    try:
+        answer = call_groq(build_messages(chat_id, text))
+        remember(chat_id, text, answer)
+        answer_msg_id = send_thinking_and_answer(token, chat_id, answer)
+
+        if answer_msg_id and has_code_blocks(answer):
+            blocks = parse_code_blocks(answer)
+            if blocks:
+                prompt_result = send_code_prompt(token, chat_id, answer_msg_id)
+                prompt_msg_id = prompt_result.get("result", {}).get("message_id")
+                if prompt_msg_id:
+                    CODE_STORE[(chat_id, prompt_msg_id)] = blocks
+    except BaseException as e:
+        print(f"Error in AI chat handler: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        reply_message(token, chat_id, f"\u274C Ошибка: {e}", message.get("message_id"))
+
+
+def main():
+    global BOT_ID, BOT_USERNAME
+
+    load_data()
+
+    token = get_env("TELEGRAM_BOT_TOKEN")
+
+    print(f"TELEGRAM_BASE_URL={TELEGRAM_BASE_URL}", flush=True)
+
+    while True:
+        try:
+            _run_bot(token)
+        except BaseException as e:
+            print(f"Bot crashed: {e}, restarting in 10s...", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            time.sleep(10)
+
+
+def _run_bot(token):
+    global BOT_ID, BOT_USERNAME
+
+    while True:
+        try:
+            bot_info = telegram_request(token, "getMe")
+            if bot_info and "result" in bot_info:
+                break
+        except Exception as e:
+            print(f"Failed to connect to Telegram API: {e}, retrying in 10s...")
+        time.sleep(10)
+
+    BOT_ID = bot_info.get("result", {}).get("id")
+    BOT_USERNAME = bot_info.get("result", {}).get("username", "")
+    print(f"ZeroxAI Telegram bot is running. @{BOT_USERNAME} (id={BOT_ID})", flush=True)
+
+    offset = 0
+
+    while True:
+        try:
+            updates = get_updates(token, offset)
+            for update in updates:
+                offset = max(offset, update["update_id"] + 1)
+                if "message" in update:
+                    try:
+                        handle_message(token, update["message"])
+                    except BaseException as e:
+                        print(f"Error handling message: {e}", file=sys.stderr)
+                        import traceback
+                        traceback.print_exc()
+                if "callback_query" in update:
+                    try:
+                        handle_callback_query(token, update["callback_query"])
+                    except BaseException as e:
+                        print(f"Error handling callback: {e}", file=sys.stderr)
+                        import traceback
+                        traceback.print_exc()
+        except KeyboardInterrupt:
+            print("Bot stopped.")
+            raise
+        except Exception as e:
+            print(f"Polling error: {e}", file=sys.stderr)
+            time.sleep(3)
+
+
+if __name__ == "__main__":
+    main()

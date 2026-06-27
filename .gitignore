@@ -2,6 +2,13 @@
 *.log
 node_modules/
 dist/
+dist_electron/
 build/
 __pycache__/
 .DS_Store
+data.json
+bot_error.txt
+bot_output.txt
+bot_pid.txt
+*.mp4
+git

@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -155,6 +156,19 @@ textarea:focus, input:focus {
 }
 """
 
+
+def load_dotenv():
+    try:
+        with open(".env") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+    except:
+        pass
+
+load_dotenv()
 
 def get_api_keys():
     raw_keys = os.getenv("ZEROXAI_API_KEYS") or os.getenv("GROQ_API_KEYS") or ""
@@ -328,4 +342,8 @@ with gr.Blocks(title="ZeroxAI") as demo:
 
 
 if __name__ == "__main__":
+    import threading
+    import telegram_bot
+    t = threading.Thread(target=telegram_bot.main, daemon=True)
+    t.start()
     demo.launch(css=CSS, theme=THEME)

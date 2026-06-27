@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f4fbff" />
+    <meta name="description" content="ZeroxAI - быстрый кроссплатформенный AI-чат для мобильных устройств и ПК." />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/icon-192.svg" />
+    <title>ZeroxAI</title>
+    <link rel="stylesheet" href="src/styles.css?v=3" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand-row">
+          <img src="assets/logo.svg" alt="ZeroxAI" class="brand-logo" />
+          <div>
+            <strong>ZeroxAI</strong>
+            <span>AI Workspace</span>
+          </div>
+        </div>
+
+        <button class="primary-action" id="newChatButton" type="button">
+          <span aria-hidden="true">+</span>
+          Новый чат
+        </button>
+
+        <nav class="chat-list" id="chatList" aria-label="История чатов"></nav>
+
+        <div class="sidebar-footer">
+          <button class="ghost-button" id="settingsButton" type="button" aria-label="Открыть настройки">
+            <span aria-hidden="true">⚙</span>
+            Настройки
+          </button>
+        </div>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="topbar">
+          <button class="icon-button mobile-only" id="menuButton" type="button" aria-label="Открыть меню">
+            <span aria-hidden="true">☰</span>
+          </button>
+          <div class="chat-title-block">
+            <h1 id="chatTitle">Новый чат</h1>
+            <p id="chatSubtitle">Готов к работе</p>
+          </div>
+          <div class="topbar-actions">
+            <button class="icon-button" id="themeToggle" type="button" aria-label="Переключить тему">
+              <span aria-hidden="true">◐</span>
+            </button>
+            <button class="icon-button" id="settingsButtonTop" type="button" aria-label="Настройки">
+              <span aria-hidden="true">⚙</span>
+            </button>
+          </div>
+        </header>
+
+        <section class="messages" id="messages" aria-live="polite"></section>
+
+        <form class="composer" id="composer">
+          <label class="sr-only" for="messageInput">Сообщение</label>
+          <textarea id="messageInput" rows="1" placeholder="Напишите сообщение ZeroxAI..." autocomplete="off"></textarea>
+          <button class="send-button" id="sendButton" type="submit" aria-label="Отправить">
+            <span aria-hidden="true">➤</span>
+          </button>
+        </form>
+      </main>
+
+      <div class="drawer-backdrop" id="drawerBackdrop"></div>
+
+      <section class="settings-drawer" id="settingsDrawer" aria-hidden="true" aria-label="Настройки ZeroxAI">
+        <div class="drawer-header">
+          <div>
+            <h2>Настройки</h2>
+            <p>Профиль, API и внешний вид</p>
+          </div>
+          <button class="icon-button" id="closeSettingsButton" type="button" aria-label="Закрыть настройки">
+            <span aria-hidden="true">×</span>
+          </button>
+        </div>
+
+        <form id="settingsForm" class="settings-form">
+          <label>
+            Имя профиля
+            <input id="profileName" type="text" maxlength="40" placeholder="Ваше имя" />
+          </label>
+
+          <label>
+            Провайдер API
+            <select id="apiProvider">
+              <option value="zeroxai-server">ZeroxAI Server</option>
+              <option value="openai">OpenAI compatible</option>
+              <option value="custom">Custom endpoint</option>
+            </select>
+          </label>
+
+          <label>
+            Base URL
+            <input id="baseUrl" type="url" placeholder="/api/chat" />
+          </label>
+
+          <label>
+            Модель
+            <input id="modelName" type="text" placeholder="openai/gpt-oss-120b" />
+          </label>
+
+          <label>
+            API Key
+            <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+          </label>
+
+          <label>
+            Пароль хранилища
+            <input id="vaultPassphrase" type="password" placeholder="Нужен для шифрования ключа" autocomplete="new-password" />
+          </label>
+
+          <div class="segmented" role="group" aria-label="Тема">
+            <button type="button" data-theme-choice="system">Система</button>
+            <button type="button" data-theme-choice="light">Светлая</button>
+            <button type="button" data-theme-choice="dark">Тёмная</button>
+          </div>
+
+          <div class="settings-actions">
+            <button class="primary-action" type="submit">Сохранить</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <template id="welcomeTemplate">
+      <div class="welcome">
+        <img src="assets/logo.svg" alt="" />
+        <h2>Чем займёмся?</h2>
+        <div class="prompt-grid">
+          <button type="button">Составь план запуска продукта</button>
+          <button type="button">Помоги написать письмо клиенту</button>
+          <button type="button">Объясни сложную тему простыми словами</button>
+          <button type="button">Сгенерируй идеи для приложения</button>
+        </div>
+      </div>
+    </template>
+
+    <script type="module" src="src/app.js?v=3"></script>
+  </body>
+</html>

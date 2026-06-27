@@ -1,0 +1,40 @@
+{
+  "name": "zeroxai",
+  "version": "1.0.0",
+  "description": "ZeroxAI cross-platform AI chat PWA for mobile and desktop.",
+  "main": "electron/main.cjs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev-server.js",
+    "start": "node scripts/dev-server.js",
+    "build": "node scripts/build.js",
+    "check": "node scripts/check-assets.js",
+    "electron:dev": "node scripts/dev-server.js & electron .",
+    "electron:build": "electron-builder"
+  },
+  "keywords": ["ai", "chat", "pwa", "zeroxai"],
+  "author": "ZeroxAI",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "electron": "^26.4.0",
+    "electron-builder": "^24.7.0"
+  },
+  "build": {
+    "appId": "com.zeroxai.desktop",
+    "productName": "ZeroxAI",
+    "directories": {
+      "output": "dist_electron"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json",
+      "scripts/**",
+      ".env"
+    ],
+    "win": {
+      "target": ["portable"]
+    }
+  }
+}
