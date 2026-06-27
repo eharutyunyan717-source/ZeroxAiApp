@@ -1571,7 +1571,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             }, {
                 "role": "user",
                 "content": f"Игрок {name} поставил {bet} монет на слот.\nВыпало: {r1} {r2} {r3}\nРезультат: {outcome}! {desc}",
-            }])
+            }], user_id)
             if ai_text and "Не удалось" not in ai_text and "Ошибка" not in ai_text:
                 clean = _html.escape(ai_text)
                 line = clean.replace(outcome, f"<b>{outcome}</b>")
