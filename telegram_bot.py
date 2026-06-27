@@ -1185,10 +1185,10 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 f"Команды: /commands\n"
                 "Просто напиши вопрос или задачу — я отвечу как AI.",
                 reply_markup={
-                    "inline_keyboard": [[
-                        {"text": "\u2B50 Подписка", "callback_data": "menu_pro"},
-                        {"text": "\U0001F916 Токены", "callback_data": "menu_tokens"},
-                    ]]
+                    "keyboard": [
+                        [{"text": "\u2B50 Подписка"}, {"text": "\U0001F916 Токены"}],
+                    ],
+                    "resize_keyboard": True,
                 }
             )
             return True
@@ -2325,6 +2325,25 @@ def handle_message(token, message):
             text = text.replace(cmd_name, cmd_name.split("@")[0], 1)
         if handle_command(token, message, chat, user, chat_id, user_id, text):
             return
+
+    # handle reply keyboard buttons
+    if text in ("\u2B50 Подписка", "\U0001F916 Токены"):
+        if text == "\u2B50 Подписка":
+            if is_pro_user(user_id):
+                reply_message(token, chat_id,
+                    "\u2B50\uFE0F У вас активна Pro-подписка! Используется Groq AI (openai/gpt-oss-120b).", None)
+            else:
+                reply_message(token, chat_id,
+                    "\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\nКупите Pro: /buypro", None)
+        else:
+            used = TOKEN_USAGE['total']
+            limit = TOKEN_LIMIT
+            bar_len = 10
+            filled = int(bar_len * used / limit) if limit else 0
+            bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
+            reply_message(token, chat_id,
+                f"\U0001F916 Токены Groq:\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)", None)
+        return
 
     try:
         answer = call_ai(build_messages(chat_id, text), user_id)
