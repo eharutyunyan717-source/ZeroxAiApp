@@ -30,6 +30,7 @@ TOKEN_LIMIT = 100000
 _GEMINI_LAST_CALL = 0
 _GEMINI_LOCK = threading.Lock()
 USER_HISTORIES = {}
+MESSAGE_COUNTS = {}
 BOT_ID = None
 BOT_USERNAME = None
 CODE_STORE = {}
@@ -2851,6 +2852,8 @@ def handle_message(token, message):
             f"\u274C Лимит токенов исчерпан ({remaining:,} / {limit:,}).\n"
             f"Подождите восстановления или купите Pro: /buypro", message.get("message_id"), reply_markup=km)
         return
+
+    MESSAGE_COUNTS[user_id] = MESSAGE_COUNTS.get(user_id, 0) + 1
 
     try:
         answer = call_ai(build_messages(chat_id, text), user_id)
