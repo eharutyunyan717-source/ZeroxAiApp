@@ -1124,7 +1124,7 @@ KNOWN_COMMANDS = {
     "/transfer", "/give", "/send",
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
-    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset",
+    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens",
 }
 
 def should_respond(message):
@@ -1302,6 +1302,15 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     return True
                 set_luck(tid, luck_val)
                 reply(f"\U0001F340 Удача для ID {tid} установлена на {luck_val}%")
+                return True
+
+            if cmd == "/resettokens":
+                try:
+                    with db_cursor() as cur:
+                        cur.execute("DELETE FROM user_tokens")
+                    reply("\U0001F504 Токены сброшены для всех пользователей!")
+                except Exception as e:
+                    reply(f"\u274C Ошибка: {e}")
                 return True
 
             if cmd == "/statbot":
