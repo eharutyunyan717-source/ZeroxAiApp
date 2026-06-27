@@ -37,6 +37,8 @@ BOT_DATA = {}
 TOKEN_USAGE = {"prompt": 0, "completion": 0, "total": 0}
 RCON_SERVERS = {}  # chat_id -> {"host": str, "port": int, "password": str}
 STICKER_POOL = []  # случайные стикеры для слота
+_BEN_STICKERS = {"yes": None, "no": None}
+_BEN_SETS = ["BenYesNo", "benyesno", "ben_da_net", "bendanet", "ben_da_net_v2"]
 
 
 def rcon_packet(req_id, ptype, payload):
@@ -138,6 +140,33 @@ def send_random_sticker(token, chat_id):
         telegram_request(token, "sendSticker", {"chat_id": chat_id, "sticker": fid})
     except Exception:
         pass
+
+
+def load_ben_stickers(token):
+    global _BEN_STICKERS
+    if _BEN_STICKERS["yes"] and _BEN_STICKERS["no"]:
+        return
+    for name in _BEN_SETS:
+        try:
+            data = telegram_request(token, "getStickerSet", {"name": name})
+            if data and "result" in data:
+                stickers = data["result"].get("stickers", [])
+                for s in stickers:
+                    emoji = s.get("emoji", "")
+                    fid = s.get("file_id")
+                    if not fid:
+                        continue
+                    if emoji in ("✅", "✔", "👍", "Yes", "yes", "YES", "Да", "да", "ДА"):
+                        if not _BEN_STICKERS["yes"]:
+                            _BEN_STICKERS["yes"] = fid
+                    elif emoji in ("❌", "✖", "👎", "No", "no", "NO", "Нет", "нет", "НЕТ"):
+                        if not _BEN_STICKERS["no"]:
+                            _BEN_STICKERS["no"] = fid
+                if _BEN_STICKERS["yes"] and _BEN_STICKERS["no"]:
+                    print(f"Ben stickers loaded from set '{name}'", flush=True)
+                    return
+        except Exception:
+            pass
 
 
 def load_dotenv():
@@ -877,7 +906,7 @@ KNOWN_COMMANDS = {
     "/transfer", "/give", "/send",
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
-    "/server", "/addsticker", "/mypro", "/buypro", "/top",
+    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben",
 }
 
 def should_respond(message):
@@ -1604,6 +1633,18 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             reply(result, "HTML")
             return True
 
+        if cmd == "/ben":
+            choice = _random.choice(["yes", "no"])
+            fid = _BEN_STICKERS.get(choice)
+            if fid:
+                try:
+                    telegram_request(token, "sendSticker", {"chat_id": chat_id, "sticker": fid})
+                except Exception:
+                    reply("Да" if choice == "yes" else "Нет")
+            else:
+                reply("Да" if choice == "yes" else "Нет")
+            return True
+
         if cmd == "/addsticker":
             reply_msg = message.get("reply_to_message")
             if reply_msg and reply_msg.get("sticker"):
@@ -2316,6 +2357,8 @@ def main():
                 BOT_ID = bot_info.get("result", {}).get("id")
                 BOT_USERNAME = bot_info.get("result", {}).get("username", "")
                 print(f"ZeroxAI Telegram bot is running. @{BOT_USERNAME} (id={BOT_ID})", flush=True)
+                load_sticker_pool(token)
+                load_ben_stickers(token)
                 telegram_request(token, "setMyCommands", {
                     "commands": [
                         {"command": "start", "description": "Главное меню"},
