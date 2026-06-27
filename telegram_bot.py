@@ -33,6 +33,12 @@ USER_HISTORIES = {}
 MESSAGE_COUNTS = {}
 BOT_ID = None
 BOT_USERNAME = None
+
+
+def increment_message_count(user_id):
+    if not user_id:
+        return
+    MESSAGE_COUNTS[user_id] = MESSAGE_COUNTS.get(user_id, 0) + 1
 CODE_STORE = {}
 BOT_DATA = {}
 TOKEN_USAGE = {"prompt": 0, "completion": 0, "total": 0}
@@ -2811,6 +2817,7 @@ def handle_message(token, message):
     if not should_respond(message):
         return
 
+    increment_message_count(user_id)
     text = strip_mention(text)
     is_group = chat.get("type") != "private"
 
@@ -2874,8 +2881,6 @@ def handle_message(token, message):
             f"\u274C Лимит токенов исчерпан ({remaining:,} / {limit:,}).\n"
             f"Подождите восстановления или купите Pro: /buypro", message.get("message_id"), reply_markup=km)
         return
-
-    MESSAGE_COUNTS[user_id] = MESSAGE_COUNTS.get(user_id, 0) + 1
 
     try:
         answer = call_ai(build_messages(chat_id, text), user_id)
