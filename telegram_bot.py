@@ -847,9 +847,58 @@ def handle_callback_query(token, callback_query):
     msg = callback_query.get("message") or {}
     chat_id = msg.get("chat", {}).get("id")
     msg_id = msg.get("message_id")
+    from_user = callback_query.get("from", {})
+    user_id = from_user.get("id")
     if not cq_id or not chat_id or not msg_id:
         return
     telegram_request(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+
+    if data == "menu_pro":
+        if is_pro_user(user_id):
+            text = "\u2B50\uFE0F У вас активна Pro-подписка! Используется Groq AI (openai/gpt-oss-120b)."
+        else:
+            text = "\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\nКупите Pro: /buypro"
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id, "text": text,
+            "reply_markup": {
+                "inline_keyboard": [[
+                    {"text": "\u25C0 Назад", "callback_data": "menu_back"},
+                ]]
+            },
+        })
+        return
+
+    if data == "menu_tokens":
+        used = TOKEN_USAGE['total']
+        limit = TOKEN_LIMIT
+        bar_len = 10
+        filled = int(bar_len * used / limit) if limit else 0
+        bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
+        text = f"\U0001F916 Токены Groq:\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)"
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id, "text": text,
+            "reply_markup": {
+                "inline_keyboard": [[
+                    {"text": "\u25C0 Назад", "callback_data": "menu_back"},
+                ]]
+            },
+        })
+        return
+
+    if data == "menu_back":
+        text = "\U0001F916 ZeroxAI Bot — многофункциональный AI-ассистент и чат-менеджер.\nКоманды: /commands\nПросто напиши вопрос или задачу — я отвечу как AI."
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id, "text": text,
+            "reply_markup": {
+                "inline_keyboard": [[
+                    {"text": "\u2B50 Подписка", "callback_data": "menu_pro"},
+                    {"text": "\U0001F916 Токены", "callback_data": "menu_tokens"},
+                ]]
+            },
+        })
+        return
+
+    # legacy code callback handling
     key = (chat_id, msg_id)
     blocks = CODE_STORE.pop(key, None)
     if not blocks:
@@ -940,8 +989,19 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
 
     is_group = chat.get("type") != "private"
 
-    def reply(msg, pm=None):
-        reply_message(token, chat_id, msg, message.get("message_id"), pm)
+    def reply(msg, pm=None, **extra):
+        chunks = split_message(msg)
+        first = True
+        for chunk in chunks:
+            payload = {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}
+            if pm:
+                payload["parse_mode"] = pm
+            if extra:
+                payload.update(extra)
+            if first and message.get("message_id"):
+                payload["reply_to_message_id"] = message["message_id"]
+                first = False
+            telegram_request(token, "sendMessage", payload)
 
     def lvl():
         return get_user_level(chat_id, user_id)
@@ -1120,9 +1180,17 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
         # --- Public commands (level 1+) ---
 
         if cmd in ("/start", "/help"):
-            reply("\U0001F916 ZeroxAI Bot — многофункциональный AI-ассистент и чат-менеджер.\n"
-                  f"Команды: /commands\n"
-                  "Просто напиши вопрос или задачу — я отвечу как AI.")
+            reply(
+                "\U0001F916 ZeroxAI Bot — многофункциональный AI-ассистент и чат-менеджер.\n"
+                f"Команды: /commands\n"
+                "Просто напиши вопрос или задачу — я отвечу как AI.",
+                reply_markup={
+                    "inline_keyboard": [[
+                        {"text": "\u2B50 Подписка", "callback_data": "menu_pro"},
+                        {"text": "\U0001F916 Токены", "callback_data": "menu_tokens"},
+                    ]]
+                }
+            )
             return True
 
         if cmd == "/about":
