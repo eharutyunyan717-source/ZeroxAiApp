@@ -1087,20 +1087,26 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             return True
 
         if cmd == "/buypro":
+            if is_pro_user(user_id):
+                reply("\u2B50\uFE0F У вас уже есть Pro-подписка!")
+                return True
             price_stars = 100
-            result = telegram_request(token, "createInvoiceLink", {
-                "title": "ZeroxAI Pro",
-                "description": "Доступ к Groq AI — более мощная языковая модель. Безлимитно навсегда.",
+            result = telegram_request(token, "sendInvoice", {
+                "chat_id": chat_id,
+                "title": "\u2B50 ZeroxAI Pro",
+                "description": (
+                    "\u2714\uFE0F Доступ к мощной модели Groq AI (openai/gpt-oss-120b)\n"
+                    "\u2714\uFE0F Более умные и развёрнутые ответы\n"
+                    "\u2714\uFE0F Приоритетная обработка запросов\n"
+                    "\u2714\uFE0F Безлимитно навсегда — никакой ежемесячной платы"
+                ),
                 "payload": f"pro_{user_id}",
+                "provider_token": "",
                 "currency": "XTR",
-                "prices": [{"label": "ZeroxAI Pro", "amount": price_stars}],
+                "prices": [{"label": "\u2B50 ZeroxAI Pro", "amount": price_stars}],
             })
-            if result.get("ok"):
-                link = result.get("result")
-                reply(f"\u2B50 Купите Pro-доступ за {price_stars} \u2B50:\n{link}\n\n"
-                      "После оплаты бот сразу получит статус Pro.")
-            else:
-                reply(f"\u274C Ошибка создания счета: {result.get('description', 'неизвестно')}")
+            if not result.get("ok"):
+                reply(f"\u274C Ошибка: {result.get('description', 'неизвестно')}")
             return True
 
         if cmd == "/ping":
