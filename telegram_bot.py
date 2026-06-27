@@ -648,6 +648,7 @@ def send_message(token, chat_id, text, reply_markup=None):
         }
         if reply_markup and i == 0:
             payload["reply_markup"] = reply_markup
+        telegram_request(token, "sendMessage", payload)
 
 
 def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None, reply_markup=None):
