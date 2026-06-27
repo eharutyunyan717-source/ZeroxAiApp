@@ -1631,8 +1631,9 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
         if cmd == "/slot":
             bet = 50
             for arg in args:
-                if arg.isdigit():
-                    bet = int(arg)
+                cleaned = arg.replace(",", "").replace(".", "")
+                if cleaned.isdigit():
+                    bet = int(cleaned)
                     break
             if bet <= 0:
                 reply("Ставка должна быть положительной.")
