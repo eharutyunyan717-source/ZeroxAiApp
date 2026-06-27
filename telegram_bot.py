@@ -2818,7 +2818,7 @@ def _run_polling_bot(token):
             updates = telegram_request(token, "getUpdates", {"offset": offset, "timeout": 10}).get("result", [])
             for update in updates:
                 offset = max(offset, update["update_id"] + 1)
-                handle_update(token, update)
+                threading.Thread(target=handle_update, args=(token, update), daemon=True).start()
         except KeyboardInterrupt:
             print("Bot stopped.")
             raise
