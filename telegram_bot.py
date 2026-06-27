@@ -639,16 +639,18 @@ def telegram_upload(token, method, fields, file_field, file_bytes, filename, con
             raise
 
 
-def send_message(token, chat_id, text):
+def send_message(token, chat_id, text, reply_markup=None):
     chunks = split_message(text)
-    for chunk in chunks:
-        telegram_request(token, "sendMessage", {
+    for i, chunk in enumerate(chunks):
+        payload = {
             "chat_id": chat_id, "text": chunk,
             "disable_web_page_preview": True,
-        })
+        }
+        if reply_markup and i == 0:
+            payload["reply_markup"] = reply_markup
 
 
-def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None):
+def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None, reply_markup=None):
     chunks = split_message(text)
     first = True
     for chunk in chunks:
@@ -658,7 +660,13 @@ def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None):
         if first and reply_to_msg_id:
             payload["reply_to_message_id"] = reply_to_msg_id
             first = False
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         telegram_request(token, "sendMessage", payload)
+
+
+def _menu_kb():
+    return {"keyboard": [[{"text": "\u2B50 Подписка"}, {"text": "\U0001F916 Токены"}]], "resize_keyboard": True}
 
 
 def edit_message(token, chat_id, message_id, text):
@@ -2327,14 +2335,15 @@ def handle_message(token, message):
             return
 
     # handle reply keyboard buttons
+    km = _menu_kb()
     if text in ("\u2B50 Подписка", "\U0001F916 Токены"):
         if text == "\u2B50 Подписка":
             if is_pro_user(user_id):
                 reply_message(token, chat_id,
-                    "\u2B50\uFE0F У вас активна Pro-подписка! Используется Groq AI (openai/gpt-oss-120b).", None)
+                    "\u2B50\uFE0F У вас активна Pro-подписка! Используется Groq AI (openai/gpt-oss-120b).", None, reply_markup=km)
             else:
                 reply_message(token, chat_id,
-                    "\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\nКупите Pro: /buypro", None)
+                    "\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\nКупите Pro: /buypro", None, reply_markup=km)
         else:
             used = TOKEN_USAGE['total']
             limit = TOKEN_LIMIT
@@ -2342,7 +2351,7 @@ def handle_message(token, message):
             filled = int(bar_len * used / limit) if limit else 0
             bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
             reply_message(token, chat_id,
-                f"\U0001F916 Токены Groq:\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)", None)
+                f"\U0001F916 Токены Groq:\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)", None, reply_markup=km)
         return
 
     try:
@@ -2362,6 +2371,12 @@ def handle_message(token, message):
         import traceback
         traceback.print_exc()
         reply_message(token, chat_id, f"\u274C Ошибка: {e}", message.get("message_id"))
+
+    # persist menu keyboard
+    try:
+        telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": "\u200B", "reply_markup": _menu_kb()})
+    except Exception:
+        pass
 
 
 def set_webhook(token):
