@@ -273,6 +273,11 @@ def init_db():
                     purchased_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '30 days'
                 );
+                CREATE TABLE IF NOT EXISTS user_tokens (
+                    user_id BIGINT PRIMARY KEY,
+                    period_start TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    tokens_used BIGINT NOT NULL DEFAULT 0
+                );
             """)
         # add expires_at column if missing (migration)
         try:
@@ -331,6 +336,83 @@ def add_pro_user(user_id):
             cur.execute("INSERT INTO pro_users (user_id, expires_at) VALUES (%s, NOW() + INTERVAL '30 days') ON CONFLICT (user_id) DO UPDATE SET expires_at = NOW() + INTERVAL '30 days'", (user_id,))
     except Exception as e:
         print(f"add_pro_user({user_id}) error: {e}", file=sys.stderr)
+
+FREE_TOKEN_LIMIT = 10000
+PRO_TOKEN_LIMIT = 100000
+FREE_PERIOD_HOURS = 24
+PRO_PERIOD_HOURS = 12
+
+def get_token_usage(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT period_start, tokens_used FROM user_tokens WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return row  # (period_start, tokens_used) or None
+    except Exception:
+        return None
+
+def can_use_tokens(user_id, input_tokens, output_tokens):
+    pro = is_pro_user(user_id)
+    limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
+    period_hours = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
+    total = input_tokens + output_tokens
+    row = get_token_usage(user_id)
+    if row is None:
+        return total <= limit, limit - total
+    period_start, tokens_used = row
+    # check if period expired
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT EXTRACT(EPOCH FROM NOW() - %s) / 3600", (period_start,))
+            hours_passed = float(cur.fetchone()[0])
+    except Exception:
+        hours_passed = 0
+    if hours_passed >= period_hours:
+        return total <= limit, limit - total
+    remaining = limit - (tokens_used + total)
+    return remaining >= 0, max(0, remaining)
+
+def record_token_usage(user_id, input_tokens, output_tokens):
+    pro = is_pro_user(user_id)
+    limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
+    period_hours = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
+    total = input_tokens + output_tokens
+    row = get_token_usage(user_id)
+    try:
+        with db_cursor() as cur:
+            if row is None:
+                cur.execute("INSERT INTO user_tokens (user_id, period_start, tokens_used) VALUES (%s, NOW(), %s)", (user_id, total))
+            else:
+                period_start, tokens_used = row
+                cur.execute("SELECT EXTRACT(EPOCH FROM NOW() - %s) / 3600", (period_start,))
+                hours_passed = float(cur.fetchone()[0])
+                if hours_passed >= period_hours:
+                    cur.execute("UPDATE user_tokens SET period_start = NOW(), tokens_used = %s WHERE user_id = %s", (total, user_id))
+                else:
+                    cur.execute("UPDATE user_tokens SET tokens_used = tokens_used + %s WHERE user_id = %s", (total, user_id))
+    except Exception as e:
+        print(f"record_token_usage({user_id}) error: {e}", file=sys.stderr)
+
+def get_token_remaining(user_id):
+    pro = is_pro_user(user_id)
+    limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
+    period_hours = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
+    row = get_token_usage(user_id)
+    if row is None:
+        return limit, period_hours
+    period_start, tokens_used = row
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT EXTRACT(EPOCH FROM NOW() - %s) / 3600", (period_start,))
+            hours_passed = float(cur.fetchone()[0])
+    except Exception:
+        hours_passed = 0
+    if hours_passed >= period_hours:
+        return limit, period_hours
+    remaining = limit - tokens_used
+    if remaining < 0:
+        remaining = 0
+    return remaining, int(period_hours - hours_passed)
 
 def call_ai(messages, user_id):
     if is_pro_user(user_id):
@@ -949,12 +1031,16 @@ def handle_callback_query(token, callback_query):
         return
 
     if data == "menu_tokens":
-        used = TOKEN_USAGE['total']
-        limit = TOKEN_LIMIT
+        pro = is_pro_user(user_id)
+        limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
+        period = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
+        remaining, hours_left = get_token_remaining(user_id)
+        used = limit - remaining
         bar_len = 10
         filled = int(bar_len * used / limit) if limit else 0
         bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
-        text = f"\U0001F916 Токены Groq:\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)"
+        tier = "Pro" if pro else "Free"
+        text = f"\U0001F916 Токены ({tier}):\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\nВосстановление: {hours_left}h / {period}h"
         telegram_request(token, "editMessageText", {
             "chat_id": chat_id, "message_id": msg_id, "text": text,
             "reply_markup": {
@@ -1226,16 +1312,33 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
 
             if cmd == "/tokens":
-                used = TOKEN_USAGE['total']
-                limit = TOKEN_LIMIT
-                bar_len = 10
-                filled = int(bar_len * used / limit) if limit else 0
-                bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
-                reply(
-                    f"\U0001F916 Токены Groq:\n"
-                    f"{bar}\n"
-                    f"{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)"
-                )
+                pro = is_pro_user(user_id)
+                if pro:
+                    limit = PRO_TOKEN_LIMIT
+                    remaining, hours_left = get_token_remaining(user_id)
+                    bar_len = 10
+                    used = limit - remaining
+                    filled = int(bar_len * used / limit) if limit else 0
+                    bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
+                    reply(
+                        f"\U0001F916 Токены (Pro):\n"
+                        f"{bar}\n"
+                        f"{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\n"
+                        f"Восстановление: {hours_left}h / {PRO_PERIOD_HOURS}h"
+                    )
+                else:
+                    limit = FREE_TOKEN_LIMIT
+                    remaining, hours_left = get_token_remaining(user_id)
+                    bar_len = 10
+                    used = limit - remaining
+                    filled = int(bar_len * used / limit) if limit else 0
+                    bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
+                    reply(
+                        f"\U0001F916 Токены (Free):\n"
+                        f"{bar}\n"
+                        f"{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\n"
+                        f"Восстановление: {hours_left}h / {FREE_PERIOD_HOURS}h"
+                    )
                 return True
 
             if cmd == "/server":
@@ -2435,17 +2538,36 @@ def handle_message(token, message):
                 reply_message(token, chat_id,
                     "\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\nКупите Pro: /buypro", None, reply_markup=km)
         else:
-            used = TOKEN_USAGE['total']
-            limit = TOKEN_LIMIT
+            pro = is_pro_user(user_id)
+            limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
+            period = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
+            remaining, hours_left = get_token_remaining(user_id)
+            used = limit - remaining
             bar_len = 10
             filled = int(bar_len * used / limit) if limit else 0
             bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
+            tier = "Pro" if pro else "Free"
             reply_message(token, chat_id,
-                f"\U0001F916 Токены Groq:\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)", None, reply_markup=km)
+                f"\U0001F916 Токены ({tier}):\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\nВосстановление: {hours_left}h / {period}h", None, reply_markup=km)
+        return
+
+    # estimate input token count (rough: 1 token ~ 4 chars)
+    est_input = len(text) // 4
+    est_output_limit = 500
+    ok, remaining = can_use_tokens(user_id, est_input, est_output_limit)
+    if not ok:
+        pro = is_pro_user(user_id)
+        limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
+        reply_message(token, chat_id,
+            f"\u274C Лимит токенов исчерпан ({remaining:,} / {limit:,}).\n"
+            f"Подождите восстановления или купите Pro: /buypro", message.get("message_id"), reply_markup=km)
         return
 
     try:
         answer = call_ai(build_messages(chat_id, text), user_id)
+        # estimate actual tokens (rough)
+        est_output = len(answer) // 4
+        record_token_usage(user_id, est_input, est_output)
         remember(chat_id, text, answer)
         answer_msg_id = send_thinking_and_answer(token, chat_id, answer)
 
