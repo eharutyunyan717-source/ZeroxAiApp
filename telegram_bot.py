@@ -307,8 +307,8 @@ def add_pro_user(user_id):
 
 def call_ai(messages, user_id):
     if is_pro_user(user_id):
-        return call_groq(messages)
-    return call_gemini(messages)
+        return call_groq(messages, MODEL)
+    return call_groq(messages, "llama-3.1-8b-instant")
 
 def call_gemini(messages):
     global _GEMINI_LAST_CALL
@@ -700,13 +700,14 @@ def remember(chat_id, user_text, assistant_text):
     USER_HISTORIES[chat_id] = history[-MAX_HISTORY_MESSAGES:]
 
 
-def call_groq(messages):
+def call_groq(messages, model=None):
     import http.client
     global ACTIVE_KEY_INDEX, TOKEN_USAGE
     api_keys = get_api_keys()
     if not api_keys:
         return "Ошибка: добавьте ZEROXAI_API_KEYS в переменные окружения."
-    payload = {"model": MODEL, "messages": messages, "temperature": 0.55, "top_p": 0.9}
+    model_name = model or MODEL
+    payload = {"model": model_name, "messages": messages, "temperature": 0.55, "top_p": 0.9}
     body = json.dumps(payload).encode("utf-8")
     last_error = "Все API-ключи не сработали."
     for attempt in range(len(api_keys)):
@@ -1090,15 +1091,15 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
         if cmd == "/about":
             reply("ZeroxAI Bot v2.0 — AI-ассистент + управление чатом.\n"
                   "Создатель: Эрик Арутюнян.\n"
-                  "\u2705 Бесплатная версия: Gemini AI (безлимитно)\n"
-                  "\u2B50 Pro: Groq AI (мощнее, платно через Telegram Stars)")
+                  "\u2705 Бесплатная версия: Groq AI (llama-3.1-8b)\n"
+                  "\u2B50 Pro: Groq AI (openai/gpt-oss-120b, мощнее)")
             return True
 
         if cmd == "/mypro":
             if is_pro_user(user_id):
-                reply("\u2B50\uFE0F У вас активна Pro-подписка! Используется Groq AI.")
+                reply("\u2B50\uFE0F У вас активна Pro-подписка! Используется Groq AI (openai/gpt-oss-120b).")
             else:
-                reply("\u274C У вас бесплатная версия (Gemini AI).\n"
+                reply("\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\n"
                       "Купите Pro: /buypro")
             return True
 
