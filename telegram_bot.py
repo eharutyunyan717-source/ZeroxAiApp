@@ -359,6 +359,18 @@ def set_luck(user_id, value):
     except Exception as e:
         print(f"set_luck({user_id}) error: {e}", file=sys.stderr)
 
+def short_num(n):
+    if n >= 1000000000:
+        return f"{n/1000000000:.1f}B"
+    if n >= 1000000:
+        return f"{n/1000000:.1f}M"
+    if n >= 1000:
+        return f"{n/1000:.1f}k"
+    return str(n)
+
+def fmt_coin(n):
+    return f"{n:,} ({short_num(n)})"
+
 FREE_TOKEN_LIMIT = 2000
 PRO_TOKEN_LIMIT = 10000
 FREE_PERIOD_HOURS = 24
@@ -1221,7 +1233,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     reply("Пользователь не найден.")
                     return True
                 add_balance(tid, amount)
-                reply(f"\U0001F4B0 Добавлено {amount} монет. Баланс получателя: {get_balance(tid)}")
+                reply(f"\U0001F4B0 Добавлено {fmt_coin(amount)} монет. Баланс получателя: {fmt_coin(get_balance(tid))}")
                 return True
 
             if cmd in ("/removecoin", "/removemoney"):
@@ -1242,7 +1254,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     reply("Пользователь не найден.")
                     return True
                 add_balance(tid, -amount)
-                reply(f"\U0001F4B0 Списано {amount} монет. Баланс получателя: {get_balance(tid)}")
+                reply(f"\U0001F4B0 Списано {fmt_coin(amount)} монет. Баланс получателя: {fmt_coin(get_balance(tid))}")
                 return True
 
             if cmd == "/stopcasino":
@@ -1329,7 +1341,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 reply(
                     f"\U0001F4CA Статистика:\n"
                     f"Пользователей с балансом: {total_users or 0}\n"
-                    f"Всего монет в обращении: {total_coins or 0}\n"
+                    f"Всего монет в обращении: {fmt_coin(total_coins or 0)}\n"
                     f"Активных чатов: {len(chats)}\n"
                     f"Казино: {'✅' if not BOT_DATA.get('casino_disabled') else '⛔'}"
                 )
@@ -1357,7 +1369,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                             name = u.get("username") and f"@{u['username']}" or u.get("first_name", name)
                     except Exception:
                         pass
-                    lines.append(f"{medals[i]} {name} — {bal:,} Coin")
+                    lines.append(f"{medals[i]} {name} — {fmt_coin(bal)} Coin")
                 reply("\n".join(lines), "HTML")
                 return True
 
@@ -1450,7 +1462,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                         name = u.get("username") and f"@{u['username']}" or u.get("first_name", name)
                 except Exception:
                     pass
-                lines.append(f"{medals[i]} {name} — {bal:,} Coin")
+                lines.append(f"{medals[i]} {name} — {fmt_coin(bal)} Coin")
             reply("\n".join(lines), "HTML")
             return True
 
@@ -1775,7 +1787,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
             add_balance(user_id, STARTING_BALANCE)
             set_claim(user_id, "free")
-            reply(f"\U0001F4B0 Вы получили {STARTING_BALANCE} монет! Ваш баланс: {get_balance(user_id)}.")
+            reply(f"\U0001F4B0 Вы получили {fmt_coin(STARTING_BALANCE)} монет! Ваш баланс: {fmt_coin(get_balance(user_id))}.")
             return True
 
         if cmd == "/promo":
@@ -1785,13 +1797,13 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             code = args[0]
             success, result = redeem_promo(user_id, code)
             if success:
-                reply(f"\U0001F389 Промокод активирован! Вы получили {result} монет. Ваш баланс: {get_balance(user_id)}")
+                reply(f"\U0001F389 Промокод активирован! Вы получили {fmt_coin(result)} монет. Ваш баланс: {fmt_coin(get_balance(user_id))}")
             else:
                 reply(f"\u26A0\uFE0F {result}")
             return True
 
         if cmd in ("/bal", "/balance"):
-            reply(f"\U0001F4B0 Ваш баланс: {get_balance(user_id)} монет.")
+            reply(f"\U0001F4B0 Ваш баланс: {fmt_coin(get_balance(user_id))} монет.")
             return True
 
         if cmd in ("/transfer", "/give", "/send"):
@@ -1823,16 +1835,16 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
             bal = get_balance(user_id)
             if amount > bal:
-                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {fmt_coin(bal)}")
                 return True
             add_balance(user_id, -amount)
             add_balance(tid, amount)
             sender_name = user.get("first_name", str(user_id))
-            reply(f"\U0001F4B0 Переведено {amount} монет. Ваш баланс: {get_balance(user_id)}")
+            reply(f"\U0001F4B0 Переведено {fmt_coin(amount)} монет. Ваш баланс: {fmt_coin(get_balance(user_id))}")
             try:
                 telegram_request(token, "sendMessage", {
                     "chat_id": tid,
-                    "text": f"\U0001F4B0 Вам переведено {amount} монет от {sender_name}.",
+                    "text": f"\U0001F4B0 Вам переведено {fmt_coin(amount)} монет от {sender_name}.",
                 })
             except Exception:
                 pass
@@ -1856,16 +1868,16 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
             bal = get_balance(user_id)
             if bet > bal:
-                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {fmt_coin(bal)}")
                 return True
             result = _random.choice(["орёл", "решка"])
             win = side in ("орёл", "орел") and result == "орёл" or side in ("решка", "reska") and result == "решка"
             if win:
                 add_balance(user_id, bet)
-                reply(f"\U0001FA99 Выпал: {result}! \U0001F389 Вы выиграли {bet} монет! Баланс: {get_balance(user_id)}")
+                reply(f"\U0001FA99 Выпал: {result}! \U0001F389 Вы выиграли {fmt_coin(bet)} монет! Баланс: {fmt_coin(get_balance(user_id))}")
             else:
                 add_balance(user_id, -bet)
-                reply(f"\U0001FA99 Выпал: {result}. \u274C Вы проиграли {bet} монет. Баланс: {get_balance(user_id)}")
+                reply(f"\U0001FA99 Выпал: {result}. \u274C Вы проиграли {fmt_coin(bet)} монет. Баланс: {fmt_coin(get_balance(user_id))}")
             return True
 
         if cmd == "/dice":
@@ -1886,17 +1898,17 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
             bal = get_balance(user_id)
             if bet > bal:
-                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {fmt_coin(bal)}")
                 return True
             result = _random.randint(1, 6)
             faces = {1: "\u2680", 2: "\u2681", 3: "\u2682", 4: "\u2683", 5: "\u2684", 6: "\u2685"}
             if result == guess:
                 payout = bet * 5
                 add_balance(user_id, payout)
-                reply(f"\U0001F3B2 {faces[result]} Вы угадали! \U0001F389 Вы выиграли {payout} монет! Баланс: {get_balance(user_id)}")
+                reply(f"\U0001F3B2 {faces[result]} Вы угадали! \U0001F389 Вы выиграли {fmt_coin(payout)} монет! Баланс: {fmt_coin(get_balance(user_id))}")
             else:
                 add_balance(user_id, -bet)
-                reply(f"\U0001F3B2 {faces[result]} Не угадали. \u274C Проиграно {bet} монет. Баланс: {get_balance(user_id)}")
+                reply(f"\U0001F3B2 {faces[result]} Не угадали. \u274C Проиграно {fmt_coin(bet)} монет. Баланс: {fmt_coin(get_balance(user_id))}")
             return True
 
         if cmd == "/allin":
@@ -1916,7 +1928,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
             bal = get_balance(user_id)
             if bet > bal:
-                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {fmt_coin(bal)}")
                 return True
             resp = telegram_request(token, "sendDice", {
                 "chat_id": chat_id, "emoji": "\U0001F3B0",
@@ -1957,8 +1969,8 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 result = (
                     f"\U0001F3B0 Выпало: {r1} {r2} {r3}\n"
                     f"\U0001F389 Поздравляем! <b>ДЖЕКПОТ!</b>\n\n"
-                    f"\U0001F4B0 Награда: {payout:,} Coin\n"
-                    f"\u26A1 Баланс: {get_balance(user_id):,}"
+                    f"\U0001F4B0 Награда: {fmt_coin(payout)} Coin\n"
+                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
                 )
             elif r1 == r2 or r2 == r3 or r1 == r3:
                 payout = bet * 2
@@ -1966,15 +1978,15 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 result = (
                     f"\U0001F3B0 Выпало: {r1} {r2} {r3}\n"
                     f"\U0001F389 Поздравляем! <b>ВЫИГРЫШ!</b>\n\n"
-                    f"\U0001F4B0 Награда: {payout:,} Coin\n"
-                    f"\u26A1 Баланс: {get_balance(user_id):,}"
+                    f"\U0001F4B0 Награда: {fmt_coin(payout)} Coin\n"
+                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
                 )
             else:
                 add_balance(user_id, -bet)
                 result = (
                     f"\U0001F3B0 Выпало: {r1} {r2} {r3}\n"
-                    f"\U0001F614 Проигрыш: -{bet:,} Coin\n"
-                    f"\u26A1 Баланс: {get_balance(user_id):,}"
+                    f"\U0001F614 Проигрыш: -{fmt_coin(bet)} Coin\n"
+                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
                 )
             reply(result, "HTML")
             return True
