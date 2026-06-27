@@ -178,8 +178,8 @@ DB_POOL = None
 WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN")
 STARTING_BALANCE = 500
 FREE_COOLDOWN_SECONDS = 12 * 60 * 60
-MAX_TRANSFER_AMOUNT = 10_000_000_000
-MAX_BALANCE = 10_000_000_000_000
+MAX_TRANSFER_AMOUNT = 100_000_000_000_000_000
+MAX_BALANCE = 100_000_000_000_000_000_000_000
 PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500, "topaichatmeneger2026": 0}
 
 
@@ -451,12 +451,16 @@ def get_luck_boost(user_id):
     return boost
 
 def short_num(n):
-    if n >= 1000000000:
-        return f"{n/1000000000:.1f}B"
-    if n >= 1000000:
-        return f"{n/1000000:.1f}M"
-    if n >= 1000:
-        return f"{n/1000:.1f}k"
+    suffixes = [
+        (10**15, "Q"),
+        (10**12, "T"),
+        (10**9, "B"),
+        (10**6, "M"),
+        (10**3, "k"),
+    ]
+    for divider, suffix in suffixes:
+        if n >= divider:
+            return f"{n/divider:.1f}{suffix}"
     return str(n)
 
 def fmt_coin(n):
