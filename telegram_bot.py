@@ -38,9 +38,10 @@ TOKEN_USAGE = {"prompt": 0, "completion": 0, "total": 0}
 RCON_SERVERS = {}  # chat_id -> {"host": str, "port": int, "password": str}
 STICKER_POOL = []  # случайные стикеры для слота
 _BEN_FILES = {"yes": None, "no": None}
+_BEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "")
 _BEN_PATHS = {
-    "yes": r"C:\Users\erikh\Documents\New project\ben-byjacce.mp4",
-    "no": r"C:\Users\erikh\Documents\New project\dog-saying-no-no.mp4",
+    "yes": os.path.join(_BEN_DIR, "ben_yes.mp4"),
+    "no": os.path.join(_BEN_DIR, "ben_no.mp4"),
 }
 
 
