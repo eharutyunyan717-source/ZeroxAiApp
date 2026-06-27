@@ -337,7 +337,7 @@ def add_pro_user(user_id):
     except Exception as e:
         print(f"add_pro_user({user_id}) error: {e}", file=sys.stderr)
 
-FREE_TOKEN_LIMIT = 10000
+FREE_TOKEN_LIMIT = 2000
 PRO_TOKEN_LIMIT = 100000
 FREE_PERIOD_HOURS = 24
 PRO_PERIOD_HOURS = 12
