@@ -37,8 +37,11 @@ BOT_DATA = {}
 TOKEN_USAGE = {"prompt": 0, "completion": 0, "total": 0}
 RCON_SERVERS = {}  # chat_id -> {"host": str, "port": int, "password": str}
 STICKER_POOL = []  # случайные стикеры для слота
-_BEN_STICKERS = {"yes": None, "no": None}
-_BEN_SETS = ["BenYesNo", "benyesno", "ben_da_net", "bendanet", "ben_da_net_v2"]
+_BEN_FILES = {"yes": None, "no": None}
+_BEN_PATHS = {
+    "yes": r"C:\Users\erikh\Documents\New project\ben-byjacce.mp4",
+    "no": r"C:\Users\erikh\Documents\New project\dog-saying-no-no.mp4",
+}
 
 
 def rcon_packet(req_id, ptype, payload):
@@ -143,30 +146,7 @@ def send_random_sticker(token, chat_id):
 
 
 def load_ben_stickers(token):
-    global _BEN_STICKERS
-    if _BEN_STICKERS["yes"] and _BEN_STICKERS["no"]:
-        return
-    for name in _BEN_SETS:
-        try:
-            data = telegram_request(token, "getStickerSet", {"name": name})
-            if data and "result" in data:
-                stickers = data["result"].get("stickers", [])
-                for s in stickers:
-                    emoji = s.get("emoji", "")
-                    fid = s.get("file_id")
-                    if not fid:
-                        continue
-                    if emoji in ("✅", "✔", "👍", "Yes", "yes", "YES", "Да", "да", "ДА"):
-                        if not _BEN_STICKERS["yes"]:
-                            _BEN_STICKERS["yes"] = fid
-                    elif emoji in ("❌", "✖", "👎", "No", "no", "NO", "Нет", "нет", "НЕТ"):
-                        if not _BEN_STICKERS["no"]:
-                            _BEN_STICKERS["no"] = fid
-                if _BEN_STICKERS["yes"] and _BEN_STICKERS["no"]:
-                    print(f"Ben stickers loaded from set '{name}'", flush=True)
-                    return
-        except Exception:
-            pass
+    pass
 
 
 def load_dotenv():
@@ -1635,14 +1615,26 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
 
         if cmd == "/ben":
             choice = _random.choice(["yes", "no"])
-            fid = _BEN_STICKERS.get(choice)
+            fid = _BEN_FILES.get(choice)
             if fid:
                 try:
-                    telegram_request(token, "sendSticker", {"chat_id": chat_id, "sticker": fid})
+                    telegram_request(token, "sendAnimation", {"chat_id": chat_id, "animation": fid})
                 except Exception:
                     reply("Да" if choice == "yes" else "Нет")
             else:
-                reply("Да" if choice == "yes" else "Нет")
+                # fallback: send MP4 directly
+                path = _BEN_PATHS.get(choice)
+                if path and os.path.exists(path):
+                    try:
+                        with open(path, "rb") as f:
+                            data = f.read()
+                        resp = telegram_upload(token, "sendAnimation", {"chat_id": chat_id}, "animation", data, f"ben_{choice}.mp4", "video/mp4")
+                        if resp and "result" in resp:
+                            _BEN_FILES[choice] = resp["result"]["animation"]["file_id"]
+                    except Exception:
+                        reply("Да" if choice == "yes" else "Нет")
+                else:
+                    reply("Да" if choice == "yes" else "Нет")
             return True
 
         if cmd == "/addsticker":
