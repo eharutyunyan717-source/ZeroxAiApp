@@ -1486,6 +1486,27 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             return False
         return True
 
+    # --- Public /hide (list available features) ---
+    if cmd == "/hide" and len(args) < 2:
+        reply(
+            "\U0001F512 Панель управления\n\n"
+            "\u2B07 Доступные функции:\n"
+            "  \u2022 casino (\U0001F3B0) — казино\n"
+            "  \u2022 shop (\U0001F6CD) — магазин\n"
+            "  \u2022 ai (\U0001F916) — AI ответы\n"
+            "  \u2022 rcon (\u2694) — RCON команды\n"
+            "  \u2022 promo (\U0001F4F0) — /promo\n"
+            "  \u2022 info (\u2139) — /info\n"
+            "  \u2022 server (\U0001F5A5) — /server\n"
+            "  \u2022 stats (\U0001F4CA) — /stats\n"
+            "  \u2022 help (\u2753) — /help\n"
+            "  \u2022 commands (\U0001F4CB) — /commands\n"
+            "  \u2022 about (\u2139\uFE0F) — /about\n\n"
+            "\u26A0\uFE0F Управление: /hide <функция> <True/False>\n"
+            "\u274C Логи не скрываются"
+        )
+        return True
+
     try:
         # --- Owner commands (id 6734685656) ---
         if user_id == 6734685656:
@@ -1539,13 +1560,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
 
             if cmd == "/hide":
                 if len(args) < 2:
-                    hidden = BOT_DATA.get("hidden", {})
-                    if hidden:
-                        text = "\U0001F512 Скрытые функции:\n" + "\n".join(f"  {k}: {'\u2705' if v else '\u274C'}" for k, v in hidden.items())
-                    else:
-                        text = "\U0001F512 Нет скрытых функций."
-                    reply(text)
-                    return True
+                    return True  # public handler already replied
                 feature = args[0].lower()
                 value = args[1].lower()
                 if value not in ("true", "false", "1", "0", "yes", "no"):
@@ -1554,8 +1569,8 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 bool_val = value in ("true", "1", "yes")
                 BOT_DATA.setdefault("hidden", {})[feature] = bool_val
                 save_data()
-                status = "\u2705 скрыта" if bool_val else "\u274C видна"
-                reply(f"\U0001F512 Функция '{feature}' {status}.")
+                status = "\u2705 скрыто" if bool_val else "\u274C видно"
+                reply(f"\U0001F512 '{feature}' {status}.")
                 return True
 
             if cmd == "/stopcasino":
