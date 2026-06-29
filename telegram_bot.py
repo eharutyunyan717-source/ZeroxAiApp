@@ -181,6 +181,7 @@ FREE_COOLDOWN_SECONDS = 12 * 60 * 60
 MAX_TRANSFER_AMOUNT = 100_000_000_000_000_000
 MAX_BALANCE = 100_000_000_000_000_000_000_000
 PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500, "topaichatmeneger2026": 0}
+ADMIN_TICKET_TARGETS = ["@er1kos_designer"]
 
 
 def parse_transfer_input(args, message):
@@ -442,13 +443,20 @@ def has_active_item(user_id, item_key):
     return time.time() < item.get("expires_at", 0)
 
 
-def get_luck_boost(user_id):
-    boost = 0
-    if has_active_item(user_id, "luck_boost_10"):
-        boost = max(boost, 10)
-    if has_active_item(user_id, "luck_boost_25"):
-        boost = max(boost, 25)
-    return boost
+def consume_item(user_id, item_key):
+    items = get_user_items(user_id)
+    if item_key in items:
+        del items[item_key]
+        set_user_items(user_id, items)
+        return True
+    return False
+
+
+SHOP_ITEMS = {
+    "luck_potion": {"name": "🍀 Зелье удачи", "price": 500, "type": "single", "description": "Гарантирует совпадение пары на слоте (1 spin). Перебрасывает стикер пока не выпадут совпадающие фрукты!"},
+    "jackpot_potion": {"name": "🍀✨ Зелье джекпота", "price": 5000, "type": "single", "description": "Гарантирует джекпот на слоте (1 spin). Перебрасывает стикер пока не выпадут 3 одинаковых символа!"},
+    "multiplier": {"name": "💰 Зелье 2х монет", "price": 2000, "type": "timed", "duration_min": 30, "description": "Удваивает все выигрыши в казино на 30 минут."},
+}
 
 def short_num(n):
     suffixes = [
@@ -467,63 +475,33 @@ def fmt_coin(n):
     return f"{n:,} ({short_num(n)})"
 
 
-def build_slot_symbols(luck, luck_roll, slot_symbols):
-    if luck <= 0:
-        return None
-    if luck_roll <= min(40, max(8, luck // 2 + 5)):
-        symbol = slot_symbols[0] if slot_symbols else "■"
-        return (symbol, symbol, symbol)
-    if luck_roll <= min(98, luck + 30):
-        pair_symbol = slot_symbols[0] if slot_symbols else "■"
-        third_symbol = slot_symbols[1] if len(slot_symbols) > 1 else pair_symbol
-        if third_symbol == pair_symbol:
-            third_symbol = slot_symbols[2] if len(slot_symbols) > 2 else pair_symbol
-        return (pair_symbol, pair_symbol, third_symbol)
-    return None
-
-
-def format_duration(hours):
-    if hours <= 0:
+def format_duration(minutes):
+    if minutes <= 0:
         return "сейчас"
-    days = hours // 24
-    rem_hours = hours % 24
-    if days and rem_hours:
-        return f"{days} {'день' if days == 1 else 'дня' if days < 5 else 'дней'} {rem_hours} ч"
-    if days:
-        return f"{days} {'день' if days == 1 else 'дня' if days < 5 else 'дней'}"
-    return f"{hours} {'час' if hours == 1 else 'часа' if hours < 5 else 'часов'}"
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours and mins:
+        return f"{hours}ч {mins}мин"
+    if hours:
+        return f"{hours}ч"
+    return f"{minutes}мин"
 
 
-def get_shop_status_text(user_id, item_id):
-    items = get_user_items(user_id)
-    item = items.get(item_id)
+def get_shop_status(user_id, item_id):
+    item = SHOP_ITEMS.get(item_id)
     if not item:
-        return "Доступно"
-    if time.time() < item.get("expires_at", 0):
-        remaining = int(item.get("expires_at", 0) - time.time())
-        return f"Активно · ещё {format_duration(remaining // 3600)}"
-    return "Просрочено"
-
-
-def format_shop_item_block(item_id, item, status_text):
-    badge = item.get("badge", "✨")
-    duration = format_duration(item.get("duration_hours", 0))
-    return (
-        f"<b>{badge} {item['name']}</b>\n"
-        f"ID: <code>{item_id}</code>\n"
-        f"Цена: <code>{fmt_coin(item['price'])}</code>\n"
-        f"Срок: <code>{duration}</code>\n"
-        f"Эффект: {item['description']}\n"
-        f"Статус: <i>{status_text}</i>"
-    )
-
-
-SHOP_ITEMS = {
-    "luck_boost_10": {"name": "🍀 Удача +10%", "price": 5000, "duration_hours": 1, "description": "Увеличивает вашу удачу на 10% на 1 час.", "badge": "🍀"},
-    "luck_boost_25": {"name": "🍀🍀 Удача +25%", "price": 12000, "duration_hours": 1, "description": "Увеличивает вашу удачу на 25% на 1 час.", "badge": "🍀"},
-    "vip_status": {"name": "💎 VIP-статус", "price": 100000, "duration_hours": 24 * 7, "description": "Показывает значок 💎 рядом с балансом на 7 дней.", "badge": "💎"},
-    "rich_status": {"name": "💰 Богач", "price": 1000000, "duration_hours": 24 * 30, "description": "Показывает значок 💰 рядом с балансом на 30 дней.", "badge": "💰"},
-}
+        return ""
+    if item["type"] == "timed":
+        if has_active_item(user_id, item_id):
+            items = get_user_items(user_id)
+            remaining = int(items[item_id]["expires_at"] - time.time())
+            return f" ✅ Активно · ещё {format_duration(remaining // 60)}"
+        return ""
+    # single-use: check if already owned
+    items = get_user_items(user_id)
+    if items.get(item_id):
+        return " ✅ В наличии"
+    return ""
 
 
 FREE_TOKEN_LIMIT = 2000
@@ -1291,7 +1269,7 @@ KNOWN_COMMANDS = {
     "/transfer", "/give", "/send",
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
-    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens",
+    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy",
 }
 
 def should_respond(message):
@@ -1547,8 +1525,44 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     suffix = "сообщение" if count % 10 == 1 and count % 100 != 11 else "сообщений"
                     lines.append(f"{medals[i]} {name} — {count} {suffix} 💬")
 
-                reply("\n".join(lines), "HTML")
+            reply("\n".join(lines), "HTML")
+            return True
+
+        if cmd == "/buy":
+            if not args:
+                reply("Использование: /buy <id>\nСписок товаров: /shop")
                 return True
+            item_id = args[0].lower()
+            item = SHOP_ITEMS.get(item_id)
+            if not item:
+                reply("❌ Такого предмета нет в магазине.")
+                return True
+            balance = get_balance(user_id)
+            if balance < item['price']:
+                reply(f"❌ Недостаточно монет. Нужно {fmt_coin(item['price'])}, у вас {fmt_coin(balance)}.")
+                return True
+            add_balance(user_id, -item['price'])
+            user_items = get_user_items(user_id)
+            if item["type"] == "timed":
+                if has_active_item(user_id, item_id):
+                    # extend existing
+                    user_items[item_id]["expires_at"] += item["duration_min"] * 60
+                else:
+                    user_items[item_id] = {
+                        "purchased_at": time.time(),
+                        "expires_at": time.time() + item["duration_min"] * 60
+                    }
+                set_user_items(user_id, user_items)
+                reply(f"✅ Куплено <b>{item['name']}</b>! Длится {format_duration(item['duration_min'])}.\nБаланс: {fmt_coin(get_balance(user_id))}.", "HTML")
+            elif item["type"] == "single":
+                # increment quantity
+                if item_id in user_items:
+                    user_items[item_id] = {"qty": user_items[item_id].get("qty", 1) + 1}
+                else:
+                    user_items[item_id] = {"qty": 1}
+                set_user_items(user_id, user_items)
+                reply(f"✅ Куплено <b>{item['name']}</b>! (x{user_items[item_id]['qty']})\nБаланс: {fmt_coin(get_balance(user_id))}.", "HTML")
+            return True
 
             if cmd == "/tokens":
                 pro = is_pro_user(user_id)
@@ -1787,10 +1801,9 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                      "/dice — бросить кубик",
                      "/roll [N] — случайное число",
                      "/choose A | B — выбор",
-                     "/8ball — шар судьбы",
-                     "/hug — обнять",
-                     "/shop — магазин предметов",
-                     "/slap — шлёпнуть",
+                      "/8ball — шар судьбы",
+                      "/hug — обнять",
+                      "/slap — шлёпнуть",
                      "/quote — цитата",
                      "/meme — мем",
                      "",
@@ -1800,8 +1813,10 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                      "/bal — баланс",
                      "/coin орёл/решка <ставка> — монетка",
                      "/dice <число> <ставка> — кубик (x5)",
-                     "/slot [ставка] — слоты",
-                     "/allin — ва-банк (вся ставка)",
+                      "/slot [ставка] — слоты",
+                      "/allin — ва-банк (вся ставка)",
+                      "/shop — магазин предметов",
+                      "/buy <id> — купить предмет",
                      "",
                      "\U0001F7E9 Уровень 5 (Помощник+):",
                      "/warn — предупреждение",
@@ -2115,53 +2130,106 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if bet > bal:
                 reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {fmt_coin(bal)}")
                 return True
-            resp = telegram_request(token, "sendDice", {
-                "chat_id": chat_id, "emoji": "\U0001F3B0",
-            })
-            try:
-                dice_value = resp["result"]["dice"]["value"]
-            except Exception:
-                dice_value = 1
+
             _SLOT_SYMS = ["\u25AC", "\U0001F347", "\U0001F34B", "7\uFE0F\u20E3"]
-            idx = dice_value - 1
-            base_luck = get_luck(user_id)
-            luck = base_luck + get_luck_boost(user_id)
-            luck_roll = _random.randint(1, 100)
-            boosted_symbols = build_slot_symbols(luck, luck_roll, _SLOT_SYMS)
-            if boosted_symbols is not None:
-                r1, r2, r3 = boosted_symbols
-                used_luck = True
+
+            def dice_symbols(dval):
+                idx = dval - 1
+                return (_SLOT_SYMS[idx // 16], _SLOT_SYMS[(idx % 16) // 4], _SLOT_SYMS[idx % 4])
+
+            def send_dice_get_value():
+                resp = telegram_request(token, "sendDice", {"chat_id": chat_id, "emoji": "\U0001F3B0"})
+                try:
+                    return resp["result"]["dice"]["value"], resp["result"].get("message_id")
+                except Exception:
+                    return 1, None
+
+            def is_pair(s1, s2, s3):
+                return s1 == s2 or s2 == s3 or s1 == s3
+
+            def is_jackpot(s1, s2, s3):
+                return s1 == s2 == s3
+
+            # check for potions
+            user_items = get_user_items(user_id)
+            want_jackpot = False
+            want_pair = False
+            potion_used = None
+
+            if user_items.get("jackpot_potion", {}).get("qty", 0) > 0:
+                want_jackpot = True
+                potion_used = "jackpot_potion"
+            elif user_items.get("luck_potion", {}).get("qty", 0) > 0:
+                want_pair = True
+                potion_used = "luck_potion"
+
+            # check multiplier
+            multiplier = 1
+            if has_active_item(user_id, "multiplier"):
+                multiplier = 2
+
+            max_attempts = 15
+            dice_value = 1
+            last_msg_id = None
+
+            for attempt in range(max_attempts):
+                dice_value, msg_id = send_dice_get_value()
+                if msg_id:
+                    last_msg_id = msg_id
+                s1, s2, s3 = dice_symbols(dice_value)
+
+                if want_jackpot and is_jackpot(s1, s2, s3):
+                    break
+                if want_pair and is_pair(s1, s2, s3):
+                    # if we wanted jackpot but got pair, keep going
+                    if want_jackpot:
+                        continue
+                    break
+                if not want_pair and not want_jackpot:
+                    break
+
+                # delete losing message and retry
+                if msg_id and attempt < max_attempts - 1:
+                    try:
+                        telegram_request(token, "deleteMessage", {"chat_id": chat_id, "message_id": msg_id})
+                    except Exception:
+                        pass
+                time.sleep(0.5)
             else:
-                r1 = _SLOT_SYMS[idx // 16]
-                r2 = _SLOT_SYMS[(idx % 16) // 4]
-                r3 = _SLOT_SYMS[idx % 4]
-                used_luck = False
+                # exhausted attempts, use last value
+                s1, s2, s3 = dice_symbols(dice_value)
+
+            # consume potion
+            if potion_used:
+                user_items[potion_used]["qty"] -= 1
+                if user_items[potion_used]["qty"] <= 0:
+                    del user_items[potion_used]
+                set_user_items(user_id, user_items)
+
             time.sleep(1)
-            luck_suffix = ""
-            if used_luck and (r1 == r2 == r3 or r1 == r2 or r2 == r3 or r1 == r3):
-                luck_suffix = f"\n✨ {max(10, luck)}x luck"
-            if r1 == r2 == r3:
-                payout = bet * 10
+
+            if is_jackpot(s1, s2, s3):
+                payout = bet * 10 * multiplier
                 add_balance(user_id, payout)
                 result = (
-                    f"\U0001F3B0 Выпало: {r1} {r2} {r3}\n"
+                    f"\U0001F3B0 Выпало: {s1} {s2} {s3}\n"
                     f"\U0001F389 Поздравляем! <b>ДЖЕКПОТ!</b>\n\n"
                     f"\U0001F4B0 Награда: {fmt_coin(payout)} Coin\n"
-                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}{luck_suffix}"
+                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
                 )
-            elif r1 == r2 or r2 == r3 or r1 == r3:
-                payout = bet * 2
+            elif is_pair(s1, s2, s3):
+                payout = bet * 2 * multiplier
                 add_balance(user_id, payout)
                 result = (
-                    f"\U0001F3B0 Выпало: {r1} {r2} {r3}\n"
+                    f"\U0001F3B0 Выпало: {s1} {s2} {s3}\n"
                     f"\U0001F389 Поздравляем! <b>ВЫИГРЫШ!</b>\n\n"
                     f"\U0001F4B0 Награда: {fmt_coin(payout)} Coin\n"
-                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}{luck_suffix}"
+                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
                 )
             else:
                 add_balance(user_id, -bet)
                 result = (
-                    f"\U0001F3B0 Выпало: {r1} {r2} {r3}\n"
+                    f"\U0001F3B0 Выпало: {s1} {s2} {s3}\n"
                     f"\U0001F614 Проигрыш: -{fmt_coin(bet)} Coin\n"
                     f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
                 )
@@ -2169,39 +2237,21 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             return True
 
         if cmd == "/shop":
-            if not args:
-                lines = ["🏪 <b>Магазин привилегий</b>", "Используйте <code>/shop buy &lt;id&gt;</code> для покупки.", ""]
-                for item_id, item in SHOP_ITEMS.items():
-                    lines.append(format_shop_item_block(item_id, item, get_shop_status_text(user_id, item_id)))
-                    lines.append("")
-                reply("\n".join(lines), "HTML")
-                return True
-
-            if args[0].lower() == "buy" and len(args) > 1:
-                item_id = args[1].lower()
-                item = SHOP_ITEMS.get(item_id)
-                if not item:
-                    reply("❌ Такого предмета нет в магазине.")
-                    return True
-
-                balance = get_balance(user_id)
-                if balance < item['price']:
-                    reply(f"❌ Недостаточно монет. Нужно {fmt_coin(item['price'])}, у вас {fmt_coin(balance)}.")
-                    return True
-
-                if has_active_item(user_id, item_id):
-                    reply(f"❌ У вас уже активен этот предмет: <b>{item['name']}</b>.", "HTML")
-                    return True
-
-                add_balance(user_id, -item['price'])
-                user_items = get_user_items(user_id)
-                user_items[item_id] = {
-                    "purchased_at": time.time(),
-                    "expires_at": time.time() + item['duration_hours'] * 3600
-                }
-                set_user_items(user_id, user_items)
-                reply(f"✅ Вы успешно купили <b>{item['name']}</b>!\nСрок действия: {format_duration(item['duration_hours'])}.\nБаланс: {fmt_coin(get_balance(user_id))}.", "HTML")
-                return True
+            lines = ["🏪 <b>Магазин</b>", "Купить: <code>/buy &lt;id&gt;</code>", ""]
+            for item_id, item in SHOP_ITEMS.items():
+                status = get_shop_status(user_id, item_id)
+                duration = ""
+                if item["type"] == "timed":
+                    duration = f" ⏱ {format_duration(item['duration_min'])}"
+                elif item["type"] == "single":
+                    duration = " 🔄 1 spin"
+                lines.append(
+                    f"<b>{item['name']}</b>\n"
+                    f"ID: <code>{item_id}</code> | Цена: {fmt_coin(item['price'])}{duration}\n"
+                    f"{item['description']}{status}"
+                )
+                lines.append("")
+            reply("\n".join(lines), "HTML")
             return True
 
         if cmd == "/ben":
