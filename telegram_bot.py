@@ -1411,6 +1411,7 @@ KNOWN_COMMANDS = {
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
     "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
+    "/hide", "/savehistory",
 }
 
 def should_respond(message):
