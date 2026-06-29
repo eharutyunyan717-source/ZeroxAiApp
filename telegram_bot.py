@@ -1502,8 +1502,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             "  \u2022 help (\u2753) — /help\n"
             "  \u2022 commands (\U0001F4CB) — /commands\n"
             "  \u2022 about (\u2139\uFE0F) — /about\n\n"
-            "\u26A0\uFE0F Управление: /hide <функция> <True/False>\n"
-            "\u274C Логи не скрываются"
+            "\u26A0\uFE0F Управление: /hide <функция> <True/False>"
         )
         return True
 
@@ -1560,7 +1559,24 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
 
             if cmd == "/hide":
                 if len(args) < 2:
-                    return True  # public handler already replied
+                    reply(
+                        "\U0001F512 Панель управления (владелец)\n\n"
+                        "\u2B07 Доступные функции:\n"
+                        "  \u2022 casino (\U0001F3B0) — казино\n"
+                        "  \u2022 shop (\U0001F6CD) — магазин\n"
+                        "  \u2022 ai (\U0001F916) — AI ответы\n"
+                        "  \u2022 rcon (\u2694) — RCON команды\n"
+                        "  \u2022 promo (\U0001F4F0) — /promo\n"
+                        "  \u2022 info (\u2139) — /info\n"
+                        "  \u2022 server (\U0001F5A5) — /server\n"
+                        "  \u2022 stats (\U0001F4CA) — /stats\n"
+                        "  \u2022 help (\u2753) — /help\n"
+                        "  \u2022 commands (\U0001F4CB) — /commands\n"
+                        "  \u2022 about (\u2139\uFE0F) — /about\n"
+                        "  \u2022 logs (\U0001F4DD) — логи переписки\n\n"
+                        "\u26A0\uFE0F Управление: /hide <функция> <True/False>"
+                    )
+                    return True
                 feature = args[0].lower()
                 value = args[1].lower()
                 if value not in ("true", "false", "1", "0", "yes", "no"):
