@@ -453,9 +453,9 @@ def consume_item(user_id, item_key):
 
 
 SHOP_ITEMS = {
-    "luck_potion": {"name": "🍀 Зелье удачи", "price": 500, "type": "single", "description": "Гарантирует совпадение пары на слоте (1 spin). Перебрасывает стикер пока не выпадут совпадающие фрукты!"},
-    "jackpot_potion": {"name": "🍀✨ Зелье джекпота", "price": 5000, "type": "single", "description": "Гарантирует джекпот на слоте (1 spin). Перебрасывает стикер пока не выпадут 3 одинаковых символа!"},
-    "multiplier": {"name": "💰 Зелье 2х монет", "price": 2000, "type": "timed", "duration_min": 30, "description": "Удваивает все выигрыши в казино на 30 минут."},
+    "luck_potion": {"name": "🍀 Зелье удачи", "price": 10000, "type": "single", "description": "Гарантирует совпадение пары на слоте (1 spin). Перебрасывает стикер пока не выпадут совпадающие фрукты!"},
+    "jackpot_potion": {"name": "🍀✨ Зелье джекпота", "price": 50000, "type": "single", "description": "Гарантирует джекпот на слоте (1 spin). Перебрасывает стикер пока не выпадут 3 одинаковых символа!"},
+    "multiplier": {"name": "💰 Зелье 2х монет", "price": 20000, "type": "timed", "duration_min": 30, "description": "Удваивает все выигрыши в казино на 30 минут."},
 }
 
 def short_num(n):
@@ -2168,9 +2168,10 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if has_active_item(user_id, "multiplier"):
                 multiplier = 2
 
-            max_attempts = 15
+            max_attempts = 200 if want_jackpot else 50
             dice_value = 1
             last_msg_id = None
+            potion_expired = False
 
             for attempt in range(max_attempts):
                 dice_value, msg_id = send_dice_get_value()
@@ -2181,9 +2182,6 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 if want_jackpot and is_jackpot(s1, s2, s3):
                     break
                 if want_pair and is_pair(s1, s2, s3):
-                    # if we wanted jackpot but got pair, keep going
-                    if want_jackpot:
-                        continue
                     break
                 if not want_pair and not want_jackpot:
                     break
@@ -2194,10 +2192,14 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                         telegram_request(token, "deleteMessage", {"chat_id": chat_id, "message_id": msg_id})
                     except Exception:
                         pass
-                time.sleep(0.5)
+                time.sleep(0.3)
             else:
-                # exhausted attempts, use last value
-                s1, s2, s3 = dice_symbols(dice_value)
+                # exhausted attempts - force win (potion already paid for)
+                win_sym = _random.choice(_SLOT_SYMS)
+                if want_jackpot:
+                    s1 = s2 = s3 = win_sym
+                else:
+                    s2 = s3 = win_sym  # guaranteed pair
 
             # consume potion
             if potion_used:
