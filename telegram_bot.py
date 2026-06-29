@@ -1529,6 +1529,12 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 reply(f"\U0001F4B0 Списано {fmt_coin(amount)} монет. Баланс получателя: {fmt_coin(get_balance(tid))}")
                 return True
 
+            if cmd == "/savehistory":
+                count = sum(len(h) // 2 for h in USER_HISTORIES.values())
+                save_histories_to_db()
+                reply(f"\U0001F4BE Сохранено {count} диалогов из памяти в БД.")
+                return True
+
             if cmd == "/stopcasino":
                 BOT_DATA["casino_disabled"] = True
                 save_data()
