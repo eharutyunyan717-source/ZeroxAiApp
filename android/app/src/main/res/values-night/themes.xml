@@ -5,14 +5,13 @@
         <item name="colorPrimaryDark">@color/primary_dark</item>
         <item name="colorAccent">@color/accent</item>
 
-        <item name="android:colorBackground">@color/background_light</item>
-        <item name="android:statusBarColor">@color/status_bar_light</item>
-        <item name="android:navigationBarColor">@color/nav_bar_light</item>
+        <item name="android:colorBackground">@color/background_dark</item>
+        <item name="android:statusBarColor">@color/status_bar_dark</item>
+        <item name="android:navigationBarColor">@color/nav_bar_dark</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowLightNavigationBar">false</item>
 
-        <!-- Splash screen -->
-        <item name="android:windowBackground">@color/background_light</item>
+        <item name="android:windowBackground">@color/background_dark</item>
     </style>
 
     <style name="Theme.ZeroxAI.Splash" parent="Theme.ZeroxAI">
