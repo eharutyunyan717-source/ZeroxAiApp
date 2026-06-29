@@ -389,6 +389,22 @@ def init_db():
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS max_balance BIGINT NOT NULL DEFAULT 0")
         except Exception:
             pass
+        # create conversation_log table
+        try:
+            with db_cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS conversation_log (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        chat_id BIGINT NOT NULL,
+                        username TEXT,
+                        user_message TEXT NOT NULL,
+                        ai_response TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+        except Exception:
+            pass
         print("Database initialized successfully.", flush=True)
     except Exception as e:
         print(f"Failed to initialize database: {e}", file=sys.stderr)
@@ -1041,6 +1057,87 @@ def remember(chat_id, user_text, assistant_text):
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": assistant_text})
     USER_HISTORIES[chat_id] = history[-MAX_HISTORY_MESSAGES:]
+
+
+def log_conversation(user_id, chat_id, username, user_message, ai_response):
+    if not DB_POOL:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "INSERT INTO conversation_log (user_id, chat_id, username, user_message, ai_response) VALUES (%s, %s, %s, %s, %s)",
+                (user_id, chat_id, username, user_message, ai_response)
+            )
+    except Exception as e:
+        print(f"Failed to log conversation: {e}", file=sys.stderr)
+
+
+OWNER_ID = 6734685656
+
+
+def forward_to_owner(token, user_id, username, user_message, ai_response, chat_id):
+    from datetime import datetime
+    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    mention = f"@{username}" if username else f"id{user_id}"
+    text = (
+        f"\U0001F4AC Новое сообщение\n"
+        f"От: {mention}\n"
+        f"Чат: {chat_id}\n"
+        f"Время: {now}\n\n"
+        f"<b>Пользователь:</b>\n{user_message[:500]}\n\n"
+        f"<b>AI:</b>\n{ai_response[:1500]}"
+    )
+    try:
+        reply_message(token, OWNER_ID, text, None, parse_mode="HTML")
+    except Exception as e:
+        print(f"Failed to forward to owner: {e}", file=sys.stderr)
+
+
+def send_recent_conversations(token):
+    if not DB_POOL:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT user_id, username, user_message, ai_response, created_at FROM conversation_log WHERE created_at >= NOW() - INTERVAL '5 hours' ORDER BY created_at ASC"
+            )
+            rows = cur.fetchall()
+    except Exception as e:
+        print(f"Failed to query recent conversations: {e}", file=sys.stderr)
+        return
+
+    if not rows:
+        try:
+            reply_message(token, OWNER_ID, "\U0001F514 Логирование включено. Предыдущие переписки не найдены (функция только что добавлена).", None)
+        except Exception:
+            pass
+        return
+
+    from datetime import datetime
+    total = len(rows)
+    parts = []
+    current = f"\U0001F4CB Последние переписки ({total} шт.)\n\n"
+    for i, (user_id, username, user_msg, ai_resp, created_at) in enumerate(rows, 1):
+        mention = f"@{username}" if username else f"id{user_id}"
+        ts = created_at.strftime("%d.%m.%Y %H:%M") if hasattr(created_at, "strftime") else str(created_at)[:16]
+        entry = (
+            f"#{i} {mention} [{ts}]\n"
+            f"\U0001F464 {user_msg[:300]}\n"
+            f"\U0001F916 {ai_resp[:300]}\n\n"
+        )
+        if len(current) + len(entry) > 3800:
+            parts.append(current)
+            current = entry
+        else:
+            current += entry
+    if current.strip():
+        parts.append(current)
+
+    for part in parts:
+        try:
+            reply_message(token, OWNER_ID, part, None)
+        except Exception as e:
+            print(f"Failed to send recent conversations: {e}", file=sys.stderr)
 
 
 def call_groq(messages, model=None):
@@ -3032,6 +3129,11 @@ def handle_message(token, message):
         remember(chat_id, text, answer)
         answer_msg_id = send_thinking_and_answer(token, chat_id, answer)
 
+        # log and forward conversation to owner
+        username = user.get("username") or user.get("first_name") or str(user_id)
+        log_conversation(user_id, chat_id, username, text, answer)
+        forward_to_owner(token, user_id, username, text, answer, chat_id)
+
         if answer_msg_id and has_code_blocks(answer):
             blocks = parse_code_blocks(answer)
             if blocks:
@@ -3105,8 +3207,36 @@ def webhook_handler_factory(token):
                 body = self.rfile.read(content_len)
                 update = json.loads(body)
                 threading.Thread(target=handle_update, args=(token, update)).start()
-            self.send_response(200)
-            self.end_headers()
+                self.send_response(200)
+                self.end_headers()
+            elif self.path == "/api/chat":
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len)
+                try:
+                    data = json.loads(body)
+                    chat_id = data.get("chat_id", "android_app")
+                    user_text = data.get("message", "").strip()
+                    user_id = data.get("user_id", 0)
+                    if not user_text:
+                        resp = {"error": "Пустое сообщение"}
+                        self.send_response(400)
+                    else:
+                        messages = build_messages(chat_id, user_text)
+                        answer = call_ai(messages, int(user_id)) if user_id else call_groq(messages)
+                        remember(chat_id, user_text, answer)
+                        resp = {"response": answer}
+                        self.send_response(200)
+                except Exception as e:
+                    resp = {"error": str(e)}
+                    self.send_response(500)
+                body_resp = json.dumps(resp).encode("utf-8")
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body_resp)
+            else:
+                self.send_response(404)
+                self.end_headers()
 
     return WebhookHandler
 
@@ -3148,6 +3278,12 @@ def main():
         except Exception as e:
             print(f"Failed to connect to Telegram API: {e}, retrying in 10s...")
         time.sleep(10)
+
+    # send recent conversations to owner on startup
+    try:
+        threading.Thread(target=send_recent_conversations, args=(token,), daemon=True).start()
+    except Exception:
+        pass
 
 
     while True:
