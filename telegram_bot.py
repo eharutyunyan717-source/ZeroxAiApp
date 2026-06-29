@@ -453,9 +453,9 @@ def consume_item(user_id, item_key):
 
 
 SHOP_ITEMS = {
-    "luck_potion": {"name": "🍀 Зелье удачи", "price": 10000, "type": "single", "description": "Гарантирует совпадение пары на слоте (1 spin). Перебрасывает стикер пока не выпадут совпадающие фрукты!"},
-    "jackpot_potion": {"name": "🍀✨ Зелье джекпота", "price": 50000, "type": "single", "description": "Гарантирует джекпот на слоте (1 spin). Перебрасывает стикер пока не выпадут 3 одинаковых символа!"},
-    "multiplier": {"name": "💰 Зелье 2х монет", "price": 20000, "type": "timed", "duration_min": 30, "description": "Удваивает все выигрыши в казино на 30 минут."},
+    "luck_potion": {"name": "🍀 Зелье удачи", "price": 100000, "type": "single", "description": "Гарантирует совпадение пары на слоте (1 spin). Перебрасывает стикер пока не выпадут совпадающие фрукты!"},
+    "jackpot_potion": {"name": "🍀✨ Зелье джекпота", "price": 500000, "type": "single", "description": "Гарантирует джекпот на слоте (1 spin). Перебрасывает стикер пока не выпадут 3 одинаковых символа!"},
+    "multiplier": {"name": "💰 Зелье 2х монет", "price": 200000, "type": "timed", "duration_min": 30, "description": "Удваивает все выигрыши в казино на 30 минут."},
 }
 
 def short_num(n):
