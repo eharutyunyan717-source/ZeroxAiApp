@@ -713,6 +713,198 @@ def save_data():
 
 SSL_CONTEXT = ssl.create_default_context()
 
+
+LANG_EXT = {
+    "python": ".py", "py": ".py",
+    "javascript": ".js", "js": ".js",
+    "typescript": ".ts", "ts": ".ts",
+    "html": ".html",
+    "css": ".css",
+    "json": ".json",
+    "xml": ".xml",
+    "yaml": ".yml", "yml": ".yml",
+    "markdown": ".md", "md": ".md",
+    "bash": ".sh", "sh": ".sh",
+    "shell": ".sh",
+    "powershell": ".ps1",
+    "c": ".c",
+    "cpp": ".cpp", "c++": ".cpp",
+    "h": ".h",
+    "java": ".java",
+    "go": ".go",
+    "rust": ".rs",
+    "ruby": ".rb",
+    "php": ".php",
+    "sql": ".sql",
+    "dockerfile": "", "docker": "",
+    "text": ".txt",
+}
+
+LEVEL_NAMES = {
+    1: "\U0001F7AB \u0413\u043E\u0441\u0442\u044C",
+    2: "\U0001F7AB \u041D\u043E\u0432\u0438\u0447\u043E\u043A",
+    3: "\U0001F7AB \u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C",
+    4: "\U0001F7E9 \u041F\u0440\u043E\u0432\u0435\u0440\u0435\u043D\u043D\u044B\u0439",
+    5: "\U0001F7E9 \u041F\u043E\u043C\u043E\u0449\u043D\u0438\u043A",
+    6: "\U0001F7E9 \u041C\u043E\u0434\u0435\u0440\u0430\u0442\u043E\u0440",
+    7: "\U0001F7E6 \u0421\u0442\u0430\u0440\u0448\u0438\u0439 \u043C\u043E\u0434",
+    8: "\U0001F7E6 \u0410\u0434\u043C\u0438\u043D",
+    9: "\U0001F7EA \u0413\u043B\u0430\u0432\u043D\u044B\u0439 \u0430\u0434\u043C\u0438\u043D",
+    10: "\u26A1\uFE0F \u041C\u043E\u043B\u043D\u0438\u044F",
+    11: "\U0001F6E1\uFE0F \u0422\u0435\u0445 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u043A\u0430",
+}
+
+LEVEL_COMMANDS = {
+    1: ["/start", "/help", "/about", "/ping", "/id", "/myrole", "/team", "/lightlist", "/rules", "/commands", "/stats", "/report", "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme", "/free", "/promo", "/bal", "/slot"],
+    5: ["/warn", "/warns", "/unwarn"],
+    6: ["/mute", "/unmute", "/kick", "/ban", "/unban"],
+    8: ["/role add", "/role remove", "/role give", "/role take", "/role list", "/role info", "/setrules"],
+    10: ["/ticket", "/closeticket", "/feedback", "/announce", "/userinfo", "/support", "/clean", "/pin", "/unpin", "/slowmode", "/say", "/welcome", "/delete", "/banlist"],
+}
+
+SYSTEM_PROMPT = """
+Ты ZeroxAI - умный, спокойный и полезный AI-ассистент.
+
+Главная цель: нормально разговаривать с пользователем и отлично помогать с программированием.
+
+Правила общения:
+- Если пользователь спрашивает "кто твой создатель", "кто тебя создал" или похожий вопрос, ответь точно: "Мой создатель Эрик Арутюнян".
+- Отвечай на языке пользователя. Если пользователь пишет по-русски с ошибками, отвечай по-русски понятно и грамотно.
+- Пиши просто, по делу и без лишней воды.
+- Не высмеивай ошибки пользователя. Мягко понимай смысл и помогай.
+- Если запрос неясный, сначала сделай разумное предположение. Задавай вопрос только если без ответа нельзя продолжить.
+- Для обычных вопросов давай короткий полезный ответ.
+- Помни историю диалога — ты видишь предыдущие сообщения, используй их для контекста.
+
+Правила программирования:
+- Пиши рабочий, чистый и понятный код.
+- Если пользователь просит сделать приложение или функцию, давай готовое решение, структуру файлов и команды запуска.
+- Объясняй ошибки простым языком и показывай, как исправить.
+- Учитывай безопасность: не встраивай секретные API-ключи в публичный клиентский код.
+- Для больших задач разбивай ответ на шаги.
+- Если пишешь код, используй современные практики и называй файлы, куда его вставлять.
+
+Стиль:
+- Ты дружелюбный профессиональный помощник ZeroxAI.
+- Не притворяйся, что обучаешь собственные веса модели. Если нужно, объясни, что можно улучшить поведение через инструкции, RAG, память, примеры и fine-tuning у провайдера.
+""".strip()
+
+
+def get_env(name):
+    value = os.getenv(name, "").strip()
+    if not value:
+        try:
+            with open(".env", "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith(f"{name}="):
+                        value = line[len(name) + 1:].strip()
+                        break
+        except Exception:
+            pass
+    if not value:
+        raise RuntimeError(f"Environment variable {name} is required.")
+    return value
+
+
+def get_api_keys():
+    raw_keys = os.getenv("ZEROXAI_API_KEYS") or os.getenv("GROQ_API_KEYS") or ""
+    return [key.strip() for key in re.split(r"[,|\n]+", raw_keys) if key.strip()]
+
+
+def load_data():
+    """Loads non-user, non-balance data from the database into memory."""
+    global BOT_DATA
+    if not DB_POOL:
+        print("DB not available, skipping data load.", file=sys.stderr)
+        BOT_DATA["chats"] = {}
+        return
+
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT chat_id, data FROM chat_data")
+            rows = cur.fetchall()
+            # Reset in-memory data before loading
+            BOT_DATA["chats"] = {}
+            for chat_id, data in rows:
+                BOT_DATA["chats"][str(chat_id)] = data
+            print(f"Loaded data for {len(rows)} chats from DB.", flush=True)
+    except Exception as e:
+        print(f"Failed to load chat data from DB: {e}", file=sys.stderr)
+        # Ensure chats key exists even on failure
+        BOT_DATA["chats"] = {}
+
+
+def get_chat_data(chat_id):
+    cid = str(chat_id)
+    if cid not in BOT_DATA["chats"]:
+        BOT_DATA["chats"][cid] = {
+            "roles": {"Молния": 10, "Админ": 8, "Модератор": 5, "Тех поддержка": 11},
+            "users": {"6734685656": "Тех поддержка"},
+            "banned": [],
+            "muted": {},
+            "warns": {},
+            "rules": "",
+            "welcome": "",
+        }
+    return BOT_DATA["chats"][cid]
+
+
+def get_user_level(chat_id, user_id):
+    cd = get_chat_data(chat_id)
+    role_name = cd.get("users", {}).get(str(user_id))
+    if role_name and role_name in cd.get("roles", {}):
+        return cd["roles"][role_name]
+    return 1
+
+
+def get_role_name(chat_id, user_id):
+    cd = get_chat_data(chat_id)
+    return cd.get("users", {}).get(str(user_id), "")
+
+
+def has_level(chat_id, user_id, required):
+    return get_user_level(chat_id, user_id) >= required
+
+
+def parse_user_ref(message, args):
+    reply = message.get("reply_to_message")
+    if reply:
+        return reply.get("from", {}).get("id")
+    for arg in args:
+        arg = arg.strip()
+        if arg.isdigit():
+            return int(arg)
+        if arg.startswith("@"):
+            return arg
+    return None
+
+
+def resolve_username(token, username):
+    username = username.lstrip("@")
+    try:
+        result = telegram_request(token, "getChat", {"chat_id": f"@{username}"})
+        return result.get("result", {}).get("id")
+    except Exception:
+        return None
+
+
+def get_user_display(user):
+    if not user:
+        return "Неизвестно"
+    name = user.get("first_name", "")
+    uname = user.get("username", "")
+    return f"{name} (@{uname})" if uname else name
+
+
+def format_minutes_duration(minutes):
+    if minutes < 60:
+        return f"{minutes} мин"
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours} ч {mins} мин" if mins else f"{hours} ч"
+
+
 def _insecure_ctx():
     return SSL_CONTEXT
 
