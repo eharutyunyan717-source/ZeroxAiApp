@@ -40,4 +40,5 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.webkit:webkit:1.9.0")
     implementation("androidx.core:core-splashscreen:1.0.1")
+    implementation("com.google.android.material:material:1.11.0")
 }

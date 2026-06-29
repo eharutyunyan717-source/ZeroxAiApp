@@ -1,7 +1,9 @@
 package com.zeroxai.app
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
@@ -20,6 +22,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.google.android.material.bottomnavigation.BottomNavigationView
 
 class MainActivity : AppCompatActivity() {
 
@@ -27,7 +30,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var errorView: FrameLayout
     private lateinit var errorMessage: TextView
-    private var isLoading = false
+    private lateinit var chatContainer: View
+    private lateinit var proContainer: View
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,13 +43,51 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.webView)
         errorView = findViewById(R.id.errorView)
         errorMessage = findViewById(R.id.errorMessage)
-        val retryButton = findViewById<Button>(R.id.retryButton)
+        chatContainer = findViewById(R.id.chatContainer)
+        proContainer = findViewById(R.id.proContainer)
 
+        val retryButton = findViewById<Button>(R.id.retryButton)
         retryButton.setOnClickListener {
             hideError()
             webView.reload()
         }
 
+        val buyProButton = findViewById<Button>(R.id.buyProButton)
+        buyProButton.setOnClickListener {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/ZeruxAibot"))
+            startActivity(intent)
+        }
+
+        val bottomNav = findViewById<BottomNavigationView>(R.id.bottomNavigation)
+        bottomNav.setOnItemSelectedListener { item ->
+            when (item.itemId) {
+                R.id.nav_chat -> {
+                    showChat()
+                    true
+                }
+                R.id.nav_pro -> {
+                    showPro()
+                    true
+                }
+                else -> false
+            }
+        }
+
+        setupWebView()
+    }
+
+    private fun showChat() {
+        chatContainer.visibility = View.VISIBLE
+        proContainer.visibility = View.GONE
+    }
+
+    private fun showPro() {
+        chatContainer.visibility = View.GONE
+        proContainer.visibility = View.VISIBLE
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun setupWebView() {
         webView.apply {
             settings.apply {
                 javaScriptEnabled = true
@@ -69,12 +111,10 @@ class MainActivity : AppCompatActivity() {
 
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                    isLoading = true
                     progressBar.visibility = View.VISIBLE
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
-                    isLoading = false
                     progressBar.visibility = View.GONE
                 }
 
@@ -135,7 +175,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
-        if (webView.canGoBack()) {
+        if (proContainer.visibility == View.VISIBLE) {
+            showChat()
+            findViewById<BottomNavigationView>(R.id.bottomNavigation).selectedItemId = R.id.nav_chat
+        } else if (webView.canGoBack()) {
             webView.goBack()
         } else {
             super.onBackPressed()

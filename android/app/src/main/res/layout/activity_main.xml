@@ -1,78 +1,107 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/background_light">
-
-    <WebView
-        android:id="@+id/webView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
-    <ProgressBar
-        android:id="@+id/progressBar"
-        style="?android:attr/progressBarStyleHorizontal"
-        android:layout_width="match_parent"
-        android:layout_height="3dp"
-        android:layout_gravity="top"
-        android:progressTint="@color/accent"
-        android:progressBackgroundTint="#1A38BDF8"
-        android:max="100" />
+    android:orientation="vertical">
 
     <FrameLayout
-        android:id="@+id/errorView"
+        android:id="@+id/chatContainer"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@color/background_light"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@color/background_light">
+
+        <WebView
+            android:id="@+id/webView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <ProgressBar
+            android:id="@+id/progressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="3dp"
+            android:layout_gravity="top"
+            android:progressTint="@color/accent"
+            android:progressBackgroundTint="#1A38BDF8"
+            android:max="100" />
+
+        <FrameLayout
+            android:id="@+id/errorView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/background_light"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="32dp">
+
+                <ImageView
+                    android:id="@+id/errorLogo"
+                    android:layout_width="120dp"
+                    android:layout_height="120dp"
+                    android:layout_marginBottom="24dp"
+                    android:importantForAccessibility="no"
+                    app:srcCompat="@mipmap/ic_launcher" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Не удалось загрузить"
+                    android:textColor="@color/text_primary_light"
+                    android:textSize="18sp"
+                    android:textStyle="bold"
+                    android:gravity="center" />
+
+                <TextView
+                    android:id="@+id/errorMessage"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="Проверьте подключение к интернету"
+                    android:textColor="@color/text_secondary_light"
+                    android:textSize="14sp"
+                    android:gravity="center" />
+
+                <Button
+                    android:id="@+id/retryButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="24dp"
+                    android:backgroundTint="@color/primary"
+                    android:paddingHorizontal="32dp"
+                    android:text="Повторить"
+                    android:textAllCaps="false"
+                    android:textColor="@color/white"
+                    android:textSize="16sp" />
+            </LinearLayout>
+        </FrameLayout>
+    </FrameLayout>
+
+    <FrameLayout
+        android:id="@+id/proContainer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
         android:visibility="gone">
 
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:gravity="center"
-            android:orientation="vertical"
-            android:padding="32dp">
-
-            <ImageView
-                android:id="@+id/errorLogo"
-                android:layout_width="120dp"
-                android:layout_height="120dp"
-                android:layout_marginBottom="24dp"
-                android:importantForAccessibility="no"
-                app:srcCompat="@mipmap/ic_launcher" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Не удалось загрузить"
-                android:textColor="@color/text_primary_light"
-                android:textSize="18sp"
-                android:textStyle="bold"
-                android:gravity="center" />
-
-            <TextView
-                android:id="@+id/errorMessage"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Проверьте подключение к интернету"
-                android:textColor="@color/text_secondary_light"
-                android:textSize="14sp"
-                android:gravity="center" />
-
-            <Button
-                android:id="@+id/retryButton"
-                android:layout_width="wrap_content"
-                android:layout_height="48dp"
-                android:layout_marginTop="24dp"
-                android:backgroundTint="@color/primary"
-                android:paddingHorizontal="32dp"
-                android:text="Повторить"
-                android:textAllCaps="false"
-                android:textColor="@color/white"
-                android:textSize="16sp" />
-        </LinearLayout>
+        <include layout="@layout/pro_section" />
     </FrameLayout>
-</FrameLayout>
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNavigation"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="@color/surface_light"
+        app:itemIconTint="@color/bottom_nav_color"
+        app:itemTextColor="@color/bottom_nav_color"
+        app:itemRippleColor="#1A0EA5E9"
+        app:menu="@menu/bottom_nav_menu" />
+
+</LinearLayout>

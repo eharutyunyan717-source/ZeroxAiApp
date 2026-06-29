@@ -21,6 +21,12 @@
     <color name="splash_background_start">#0EA5E9</color>
     <color name="splash_background_end">#0284C7</color>
 
+    <!-- Pro subscription -->
+    <color name="pro_gold">#F59E0B</color>
+    <color name="pro_card_start">#1E3A5F</color>
+    <color name="pro_card_end">#0EA5E9</color>
+    <color name="pro_badge">#F59E0B</color>
+
     <!-- Universal -->
     <color name="white">#FFFFFF</color>
     <color name="black">#000000</color>
