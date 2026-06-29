@@ -1537,6 +1537,27 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 reply(f"\U0001F4BE Сохранено {count} диалогов из памяти в БД.")
                 return True
 
+            if cmd == "/hide":
+                if len(args) < 2:
+                    hidden = BOT_DATA.get("hidden", {})
+                    if hidden:
+                        text = "\U0001F512 Скрытые функции:\n" + "\n".join(f"  {k}: {'\u2705' if v else '\u274C'}" for k, v in hidden.items())
+                    else:
+                        text = "\U0001F512 Нет скрытых функций."
+                    reply(text)
+                    return True
+                feature = args[0].lower()
+                value = args[1].lower()
+                if value not in ("true", "false", "1", "0", "yes", "no"):
+                    reply("\u274C Использование: /hide <функция> <True/False>")
+                    return True
+                bool_val = value in ("true", "1", "yes")
+                BOT_DATA.setdefault("hidden", {})[feature] = bool_val
+                save_data()
+                status = "\u2705 скрыта" if bool_val else "\u274C видна"
+                reply(f"\U0001F512 Функция '{feature}' {status}.")
+                return True
+
             if cmd == "/stopcasino":
                 BOT_DATA["casino_disabled"] = True
                 save_data()
