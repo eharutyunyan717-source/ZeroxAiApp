@@ -9,6 +9,7 @@ import ssl
 import struct
 import sys
 import signal
+import datetime
 import threading
 import time
 import urllib.error
@@ -233,8 +234,13 @@ def set_balance(user_id, amount):
         amount = MAX_BALANCE
     try:
         with db_cursor() as cur:
-            cur.execute("INSERT INTO users (user_id, balance) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET balance = %s",
-                        (user_id, amount, amount))
+            cur.execute("""
+                INSERT INTO users (user_id, balance, max_balance, created_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE SET
+                    balance = %s,
+                    max_balance = GREATEST(users.max_balance, %s)
+            """, (user_id, amount, amount, amount, amount))
     except Exception as e:
         print(f"Failed to set balance for {user_id}: {e}", file=sys.stderr)
 
@@ -347,6 +353,18 @@ def init_db():
         try:
             with db_cursor() as cur:
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS items JSONB")
+        except Exception:
+            pass
+        # add created_at column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        except Exception:
+            pass
+        # add max_balance column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS max_balance BIGINT NOT NULL DEFAULT 0")
         except Exception:
             pass
         print("Database initialized successfully.", flush=True)
@@ -1269,7 +1287,7 @@ KNOWN_COMMANDS = {
     "/transfer", "/give", "/send",
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
-    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy",
+    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
 }
 
 def should_respond(message):
@@ -1685,6 +1703,46 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             else:
                 reply("\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\n"
                       "Купите Pro: /buypro")
+            return True
+
+        if cmd == "/info":
+            try:
+                with db_cursor() as cur:
+                    cur.execute("SELECT balance, max_balance, created_at FROM users WHERE user_id = %s", (user_id,))
+                    row = cur.fetchone()
+            except Exception:
+                row = None
+            u = user or {}
+            fname = u.get("first_name", "")
+            lname = u.get("last_name", "")
+            uname = u.get("username", "")
+            full_name = f"{fname} {lname}".strip() or "No name"
+            bal = get_balance(user_id)
+            max_bal = row[1] if row else bal
+            created = row[2] if row else None
+            pro = is_pro_user(user_id)
+            pro_days = pro_days_left(user_id) if pro else 0
+            msg_count = MESSAGE_COUNTS.get(user_id, 0)
+            if created:
+                delta = datetime.datetime.now(datetime.timezone.utc) - created
+                reg_days = delta.days
+                reg_hours = delta.seconds // 3600
+                reg_str = f"{created.strftime('%d.%m.%Y %H:%M')} ({reg_days}д {reg_hours}ч назад)"
+            else:
+                reg_str = "неизвестно"
+            lines = [
+                f"\U0001F464 <b>Информация о пользователе</b>",
+                f"Имя: {full_name}",
+                f"Username: @{uname}" if uname else "",
+                f"ID: <code>{user_id}</code>",
+                f"",
+                f"\U0001F4B0 Баланс: {fmt_coin(bal)}",
+                f"\U0001F3C6 Рекорд баланса: {fmt_coin(max_bal)}",
+                f"\u2B50 Подписка: {'Pro (' + str(pro_days) + ' дн.)' if pro else 'Free'}",
+                f"\U0001F4AC Всего сообщений: {msg_count:,}",
+                f"\U0001F4C5 Зарегистрирован: {reg_str}",
+            ]
+            reply("\n".join([l for l in lines if l]), "HTML")
             return True
 
         if cmd == "/buypro":
