@@ -1706,23 +1706,43 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             return True
 
         if cmd == "/info":
+            target_id = user_id
+            target_user = user
+            reply_msg = message.get("reply_to_message")
+            if reply_msg:
+                target_user = reply_msg.get("from", {})
+                target_id = target_user.get("id", user_id)
+            elif args:
+                arg = args[0]
+                if arg.startswith("@"):
+                    username = arg[1:]
+                    try:
+                        chat_info = telegram_request(token, "getChat", {"chat_id": f"@{username}"})
+                        if chat_info and "id" in chat_info:
+                            target_id = chat_info["id"]
+                            target_user = chat_info
+                    except Exception:
+                        reply(f"❌ Пользователь @{username} не найден.")
+                        return True
+                elif arg.isdigit():
+                    target_id = int(arg)
             try:
                 with db_cursor() as cur:
-                    cur.execute("SELECT balance, max_balance, created_at FROM users WHERE user_id = %s", (user_id,))
+                    cur.execute("SELECT balance, max_balance, created_at FROM users WHERE user_id = %s", (target_id,))
                     row = cur.fetchone()
             except Exception:
                 row = None
-            u = user or {}
+            u = target_user or {}
             fname = u.get("first_name", "")
             lname = u.get("last_name", "")
             uname = u.get("username", "")
             full_name = f"{fname} {lname}".strip() or "No name"
-            bal = get_balance(user_id)
+            bal = get_balance(target_id)
             max_bal = row[1] if row else bal
             created = row[2] if row else None
-            pro = is_pro_user(user_id)
-            pro_days = pro_days_left(user_id) if pro else 0
-            msg_count = MESSAGE_COUNTS.get(user_id, 0)
+            pro = is_pro_user(target_id)
+            pro_days = str(pro_days_left(target_id)) if pro else ""
+            msg_count = MESSAGE_COUNTS.get(target_id, 0)
             if created:
                 delta = datetime.datetime.now(datetime.timezone.utc) - created
                 reg_days = delta.days
@@ -1731,16 +1751,16 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             else:
                 reg_str = "неизвестно"
             lines = [
-                f"\U0001F464 <b>Информация о пользователе</b>",
+                f"👤 <b>Информация о пользователе</b>",
                 f"Имя: {full_name}",
                 f"Username: @{uname}" if uname else "",
-                f"ID: <code>{user_id}</code>",
+                f"ID: <code>{target_id}</code>",
                 f"",
-                f"\U0001F4B0 Баланс: {fmt_coin(bal)}",
-                f"\U0001F3C6 Рекорд баланса: {fmt_coin(max_bal)}",
-                f"\u2B50 Подписка: {'Pro (' + str(pro_days) + ' дн.)' if pro else 'Free'}",
-                f"\U0001F4AC Всего сообщений: {msg_count:,}",
-                f"\U0001F4C5 Зарегистрирован: {reg_str}",
+                f"💰 Баланс: {fmt_coin(bal)}",
+                f"🏆 Рекорд баланса: {fmt_coin(max_bal)}",
+                f"⭐ Подписка: {'Pro (' + pro_days + ' дн.)' if pro else 'Free'}",
+                f"💐 Всего сообщений: {msg_count:,}",
+                f"📅 Зарегистрирован: {reg_str}",
             ]
             reply("\n".join([l for l in lines if l]), "HTML")
             return True
