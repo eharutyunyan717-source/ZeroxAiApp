@@ -717,7 +717,7 @@ def call_gemini(messages):
     return "Gemini временно недоступен. Попробуйте позже."
 
 def save_data():
-    # This function is now only for chat-specific data like roles
+    # Save chat data to DB
     if not DB_POOL: return
     try:
         with db_cursor() as cur:
@@ -726,6 +726,27 @@ def save_data():
                             (chat_id, json.dumps(data), json.dumps(data)))
     except Exception as e:
         print(f"Failed to save chat_data: {e}", file=sys.stderr)
+
+
+def save_histories_to_db():
+    """Save in-memory USER_HISTORIES to conversation_log on shutdown."""
+    if not DB_POOL or not USER_HISTORIES:
+        return
+    try:
+        with db_cursor() as cur:
+            for chat_id, history in USER_HISTORIES.items():
+                # history is alternating [user, assistant, user, assistant, ...]
+                for i in range(0, len(history) - 1, 2):
+                    user_msg = history[i].get("content", "")
+                    ai_resp = history[i + 1].get("content", "") if i + 1 < len(history) else ""
+                    if user_msg and ai_resp:
+                        cur.execute(
+                            "INSERT INTO conversation_log (user_id, chat_id, username, user_message, ai_response) VALUES (%s, %s, %s, %s, %s)",
+                            (chat_id, chat_id, str(chat_id), user_msg, ai_resp)
+                        )
+        print(f"Saved {sum(len(h) // 2 for h in USER_HISTORIES.values())} conversations from memory.", flush=True)
+    except Exception as e:
+        print(f"Failed to save histories: {e}", file=sys.stderr)
 
 SSL_CONTEXT = ssl.create_default_context()
 
@@ -1107,10 +1128,6 @@ def send_recent_conversations(token):
         return
 
     if not rows:
-        try:
-            reply_message(token, OWNER_ID, "\U0001F514 Логирование включено. Предыдущие переписки не найдены (функция только что добавлена).", None)
-        except Exception:
-            pass
         return
 
     from datetime import datetime
@@ -3246,6 +3263,7 @@ def main():
     def signal_handler(sig, frame):
         print("Termination signal received, saving data...", flush=True)
         save_data()
+        save_histories_to_db()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, signal_handler)
