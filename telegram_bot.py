@@ -1525,8 +1525,8 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     suffix = "сообщение" if count % 10 == 1 and count % 100 != 11 else "сообщений"
                     lines.append(f"{medals[i]} {name} — {count} {suffix} 💬")
 
-            reply("\n".join(lines), "HTML")
-            return True
+                reply("\n".join(lines), "HTML")
+                return True
 
         if cmd == "/buy":
             if not args:
