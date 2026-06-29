@@ -32,6 +32,7 @@ _GEMINI_LAST_CALL = 0
 _GEMINI_LOCK = threading.Lock()
 USER_HISTORIES = {}
 MESSAGE_COUNTS = {}
+MESSAGE_COUNTS_LOCK = threading.Lock()
 BOT_ID = None
 BOT_USERNAME = None
 
@@ -39,7 +40,8 @@ BOT_USERNAME = None
 def increment_message_count(user_id):
     if not user_id:
         return
-    MESSAGE_COUNTS[user_id] = MESSAGE_COUNTS.get(user_id, 0) + 1
+    with MESSAGE_COUNTS_LOCK:
+        MESSAGE_COUNTS[user_id] = MESSAGE_COUNTS.get(user_id, 0) + 1
 CODE_STORE = {}
 BOT_DATA = {}
 TOKEN_USAGE = {"prompt": 0, "completion": 0, "total": 0}
@@ -180,7 +182,7 @@ WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN")
 STARTING_BALANCE = 500
 FREE_COOLDOWN_SECONDS = 12 * 60 * 60
 MAX_TRANSFER_AMOUNT = 100_000_000_000_000_000
-MAX_BALANCE = 100_000_000_000_000_000_000_000
+MAX_BALANCE = 9_000_000_000_000_000_000
 PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500, "topaichatmeneger2026": 0}
 ADMIN_TICKET_TARGETS = ["@er1kos_designer"]
 
@@ -245,9 +247,29 @@ def set_balance(user_id, amount):
         print(f"Failed to set balance for {user_id}: {e}", file=sys.stderr)
 
 def add_balance(user_id, amount):
-    bal = get_balance(user_id) + amount
-    set_balance(user_id, bal)
-    return bal
+    amount = int(amount)
+    try:
+        with db_cursor() as cur:
+            cur.execute("""
+                UPDATE users SET
+                    balance = LEAST(GREATEST(balance + %s, 0), %s),
+                    max_balance = GREATEST(max_balance, LEAST(GREATEST(balance + %s, 0), %s))
+                WHERE user_id = %s
+                RETURNING balance
+            """, (amount, MAX_BALANCE, amount, MAX_BALANCE, user_id))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+            # user does not exist yet — insert
+            cur.execute("""
+                INSERT INTO users (user_id, balance, max_balance, created_at)
+                VALUES (%s, LEAST(GREATEST(%s, 0), %s), LEAST(GREATEST(%s, 0), %s), NOW())
+                RETURNING balance
+            """, (user_id, amount, MAX_BALANCE, amount, MAX_BALANCE))
+            return cur.fetchone()[0]
+    except Exception as e:
+        print(f"Failed to add balance for {user_id}: {e}", file=sys.stderr)
+        return get_balance(user_id)
 
 def get_claim(user_id, claim_type):
     try:
@@ -536,47 +558,36 @@ def get_token_usage(user_id):
     except Exception:
         return None
 
-def can_use_tokens(user_id, input_tokens, output_tokens):
+def try_use_tokens(user_id, input_tokens, output_tokens):
     pro = is_pro_user(user_id)
     limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
     period_hours = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
     total = input_tokens + output_tokens
-    row = get_token_usage(user_id)
-    if row is None:
-        return total <= limit, limit - total
-    period_start, tokens_used = row
-    # check if period expired
     try:
         with db_cursor() as cur:
+            cur.execute("SELECT period_start, tokens_used FROM user_tokens WHERE user_id = %s FOR UPDATE", (user_id,))
+            row = cur.fetchone()
+            if row is None:
+                if total > limit:
+                    return False, limit
+                cur.execute("INSERT INTO user_tokens (user_id, period_start, tokens_used) VALUES (%s, NOW(), %s)", (user_id, total))
+                return True, limit - total
+            period_start, tokens_used = row
             cur.execute("SELECT EXTRACT(EPOCH FROM NOW() - %s) / 3600", (period_start,))
             hours_passed = float(cur.fetchone()[0])
-    except Exception:
-        hours_passed = 0
-    if hours_passed >= period_hours:
-        return total <= limit, limit - total
-    remaining = limit - (tokens_used + total)
-    return remaining >= 0, max(0, remaining)
-
-def record_token_usage(user_id, input_tokens, output_tokens):
-    pro = is_pro_user(user_id)
-    limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
-    period_hours = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
-    total = input_tokens + output_tokens
-    row = get_token_usage(user_id)
-    try:
-        with db_cursor() as cur:
-            if row is None:
-                cur.execute("INSERT INTO user_tokens (user_id, period_start, tokens_used) VALUES (%s, NOW(), %s)", (user_id, total))
-            else:
-                period_start, tokens_used = row
-                cur.execute("SELECT EXTRACT(EPOCH FROM NOW() - %s) / 3600", (period_start,))
-                hours_passed = float(cur.fetchone()[0])
-                if hours_passed >= period_hours:
-                    cur.execute("UPDATE user_tokens SET period_start = NOW(), tokens_used = %s WHERE user_id = %s", (total, user_id))
-                else:
-                    cur.execute("UPDATE user_tokens SET tokens_used = tokens_used + %s WHERE user_id = %s", (total, user_id))
+            if hours_passed >= period_hours:
+                if total > limit:
+                    return False, limit
+                cur.execute("UPDATE user_tokens SET period_start = NOW(), tokens_used = %s WHERE user_id = %s", (total, user_id))
+                return True, limit - total
+            remaining = limit - (tokens_used + total)
+            if remaining < 0:
+                return False, limit - tokens_used
+            cur.execute("UPDATE user_tokens SET tokens_used = tokens_used + %s WHERE user_id = %s", (total, user_id))
+            return True, max(0, remaining)
     except Exception as e:
-        print(f"record_token_usage({user_id}) error: {e}", file=sys.stderr)
+        print(f"try_use_tokens({user_id}) error: {e}", file=sys.stderr)
+        return False, 0
 
 def get_token_remaining(user_id):
     pro = is_pro_user(user_id)
@@ -1582,65 +1593,65 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 reply(f"✅ Куплено <b>{item['name']}</b>! (x{user_items[item_id]['qty']})\nБаланс: {fmt_coin(get_balance(user_id))}.", "HTML")
             return True
 
-            if cmd == "/tokens":
-                pro = is_pro_user(user_id)
-                if pro:
-                    limit = PRO_TOKEN_LIMIT
-                    remaining, hours_left = get_token_remaining(user_id)
-                    bar_len = 10
-                    used = limit - remaining
-                    filled = int(bar_len * used / limit) if limit else 0
-                    bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
-                    reply(
-                        f"\U0001F916 Токены (Pro):\n"
-                        f"{bar}\n"
-                        f"{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\n"
-                        f"Восстановление: {hours_left}h / {PRO_PERIOD_HOURS}h"
-                    )
-                else:
-                    limit = FREE_TOKEN_LIMIT
-                    remaining, hours_left = get_token_remaining(user_id)
-                    bar_len = 10
-                    used = limit - remaining
-                    filled = int(bar_len * used / limit) if limit else 0
-                    bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
-                    reply(
-                        f"\U0001F916 Токены (Free):\n"
-                        f"{bar}\n"
-                        f"{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\n"
-                        f"Восстановление: {hours_left}h / {FREE_PERIOD_HOURS}h"
-                    )
-                return True
+        if cmd == "/tokens":
+            pro = is_pro_user(user_id)
+            if pro:
+                limit = PRO_TOKEN_LIMIT
+                remaining, hours_left = get_token_remaining(user_id)
+                bar_len = 10
+                used = limit - remaining
+                filled = int(bar_len * used / limit) if limit else 0
+                bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
+                reply(
+                    f"\U0001F916 Токены (Pro):\n"
+                    f"{bar}\n"
+                    f"{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\n"
+                    f"Восстановление: {hours_left}h / {PRO_PERIOD_HOURS}h"
+                )
+            else:
+                limit = FREE_TOKEN_LIMIT
+                remaining, hours_left = get_token_remaining(user_id)
+                bar_len = 10
+                used = limit - remaining
+                filled = int(bar_len * used / limit) if limit else 0
+                bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
+                reply(
+                    f"\U0001F916 Токены (Free):\n"
+                    f"{bar}\n"
+                    f"{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\n"
+                    f"Восстановление: {hours_left}h / {FREE_PERIOD_HOURS}h"
+                )
+            return True
 
-            if cmd == "/server":
-                if len(args) >= 1 and args[0] == "off":
-                    if chat_id in RCON_SERVERS:
-                        del RCON_SERVERS[chat_id]
-                        reply("\u274C Режим консоли Minecraft выключен.")
-                    else:
-                        reply("\u26A0\uFE0F Режим консоли не активен.")
-                    return True
-                if len(args) < 3:
-                    reply("Использование: /server <host> <port> <password>\n"
-                          "Все сообщения после подключения уходят в RCON.\n"
-                          "/server off — выйти из режима консоли.")
-                    return True
-                host = args[0]
-                try:
-                    port = int(args[1])
-                except ValueError:
-                    reply("Порт должен быть числом.")
-                    return True
-                password = args[2]
-                resp, err = rcon_command(host, port, password, "list")
-                if err:
-                    reply(f"\u274C Ошибка подключения: {err}")
-                    return True
-                RCON_SERVERS[chat_id] = {"host": host, "port": port, "password": password}
-                reply(f"\u2705 Подключено к {host}:{port}\n"
-                      f"Ответ на /list:\n{resp}\n"
-                      f"Все сообщения теперь уходят в консоль. /server off — выйти.")
+        if cmd == "/server":
+            if len(args) >= 1 and args[0] == "off":
+                if chat_id in RCON_SERVERS:
+                    del RCON_SERVERS[chat_id]
+                    reply("\u274C Режим консоли Minecraft выключен.")
+                else:
+                    reply("\u26A0\uFE0F Режим консоли не активен.")
                 return True
+            if len(args) < 3:
+                reply("Использование: /server <host> <port> <password>\n"
+                      "Все сообщения после подключения уходят в RCON.\n"
+                      "/server off — выйти из режима консоли.")
+                return True
+            host = args[0]
+            try:
+                port = int(args[1])
+            except ValueError:
+                reply("Порт должен быть числом.")
+                return True
+            password = args[2]
+            resp, err = rcon_command(host, port, password, "list")
+            if err:
+                reply(f"\u274C Ошибка подключения: {err}")
+                return True
+            RCON_SERVERS[chat_id] = {"host": host, "port": port, "password": password}
+            reply(f"\u2705 Подключено к {host}:{port}\n"
+                  f"Ответ на /list:\n{resp}\n"
+                  f"Все сообщения теперь уходят в консоль. /server off — выйти.")
+            return True
 
         # --- Casino disabled check ---
         if BOT_DATA.get("casino_disabled") and cmd in ("/coin", "/dice", "/slot", "/allin"):
@@ -1961,7 +1972,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
         if cmd == "/roll":
             max_val = 100
             for arg in args:
-                if arg.isdigit():
+                if arg.isdigit() and int(arg) > 0:
                     max_val = int(arg)
                     break
             result = _random.randint(1, max_val)
@@ -3009,7 +3020,7 @@ def handle_message(token, message):
     # estimate input token count (rough: 1 token ~ 4 chars)
     est_input = len(text) // 4
     est_output_limit = 500
-    ok, remaining = can_use_tokens(user_id, est_input, est_output_limit)
+    ok, remaining = try_use_tokens(user_id, est_input, est_output_limit)
     if not ok:
         pro = is_pro_user(user_id)
         limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
@@ -3022,7 +3033,6 @@ def handle_message(token, message):
         answer = call_ai(build_messages(chat_id, text), user_id)
         # estimate actual tokens (rough)
         est_output = len(answer) // 4
-        record_token_usage(user_id, est_input, est_output)
         remember(chat_id, text, answer)
         answer_msg_id = send_thinking_and_answer(token, chat_id, answer)
 
@@ -3089,6 +3099,12 @@ def webhook_handler_factory(token):
 
         def do_POST(self):
             if self.path == f"/webhook/{token}":
+                if WEBHOOK_SECRET_TOKEN:
+                    received = self.headers.get("X-Telegram-Bot-Api-Secret-Token") or self.headers.get("x-telegram-bot-api-secret-token")
+                    if received != WEBHOOK_SECRET_TOKEN:
+                        self.send_response(403)
+                        self.end_headers()
+                        return
                 content_len = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(content_len)
                 update = json.loads(body)
