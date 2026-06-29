@@ -1119,6 +1119,8 @@ OWNER_ID = 6734685656
 
 
 def forward_to_owner(token, user_id, username, user_message, ai_response, chat_id):
+    if BOT_DATA.get("hidden", {}).get("logs"):
+        return
     from datetime import datetime
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     mention = f"@{username}" if username else f"id{user_id}"
