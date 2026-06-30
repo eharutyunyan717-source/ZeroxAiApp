@@ -845,6 +845,7 @@ SYSTEM_PROMPT = """
   - на армянском: "Իմ ստեղծողը Էրիկ Հարությունյանն է"
   - на английском: "My creator is Erik Harutyunyan"
 - Пиши коротко, без лишних фраз и воды. Ответил — замолчи.
+- Обращайся к пользователю по имени или @username, если знаешь. Это делает общение персонализированным.
 - Не высмеивай ошибки пользователя. Мягко понимай смысл и помогай.
 - Если запрос неясный, сначала сделай разумное предположение. Задавай вопрос только если без ответа нельзя продолжить.
 - Для обычных вопросов давай короткий полезный ответ.
@@ -864,8 +865,9 @@ SYSTEM_PROMPT = """
 - Разбивай текст на абзацы и используй символы: \u2014 (тире), \u2022 (буллит), \u2192 (стрелка)
 - Главные мысли выделяй <b>жирным</b>
 - Пиши的结构: заголовок \u2192 детали \u2192 итог
-- Если пользователь пишет "привет" — ответь приветствием с эмодзи и парой предложений
+- Если пользователь пишет "привет" — ответь приветствием с эмодзи, обращаясь по имени или @username
 - Делай ответы информативными, но не перегружай
+- Используй имя или @username пользователя при обращении к нему. Ты знаешь, кто с тобой говорит.
 """.strip()
 
 
@@ -1115,9 +1117,13 @@ def split_message(text):
     return [text[index:index + MAX_TELEGRAM_MESSAGE] for index in range(0, len(text), MAX_TELEGRAM_MESSAGE)]
 
 
-def build_messages(chat_id, user_text):
+def build_messages(chat_id, user_text, username=None, first_name=None):
     history = USER_HISTORIES.get(chat_id, [])[-MAX_HISTORY_MESSAGES:]
-    return [{"role": "system", "content": SYSTEM_PROMPT}, *history, {"role": "user", "content": user_text}]
+    user_ref = first_name or username or "Пользователь"
+    context = f"С тобой говорит {user_ref}."
+    if username:
+        context += f" Его юзернейм: @{username}."
+    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context}, *history, {"role": "user", "content": user_text}]
 
 
 def remember(chat_id, user_text, assistant_text):
@@ -3393,7 +3399,7 @@ def handle_message(token, message):
         return
 
     try:
-        answer = call_ai(build_messages(chat_id, text), user_id)
+        answer = call_ai(build_messages(chat_id, text, user.get("username"), user.get("first_name")), user_id)
         # estimate actual tokens (rough)
         est_output = len(answer) // 4
         remember(chat_id, text, answer)
@@ -3491,7 +3497,7 @@ def webhook_handler_factory(token):
                         resp = {"error": "Пустое сообщение"}
                         self.send_response(400)
                     else:
-                        messages = build_messages(chat_id, user_text)
+                        messages = build_messages(chat_id, user_text, data.get("username"), data.get("first_name"))
                         answer = call_ai(messages, int(user_id)) if user_id else call_groq(messages)
                         remember(chat_id, user_text, answer)
                         resp = {"response": answer}
