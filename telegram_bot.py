@@ -844,9 +844,14 @@ SYSTEM_PROMPT = """
 - Для больших задач разбивай ответ на шаги.
 - Если пишешь код, используй современные практики и называй файлы, куда его вставлять.
 
-Стиль:
-- Ты дружелюбный профессиональный помощник ZeroxAI.
-- Не притворяйся, что обучаешь собственные веса модели. Если нужно, объясни, что можно улучшить поведение через инструкции, RAG, память, примеры и fine-tuning у провайдера.
+Стиль оформления (ОБЯЗАТЕЛЬНО):
+- Форматируй ответы красиво с помощью HTML-тегов: <b>жирный</b>, <i>курсив</i>, <code>код</code>
+- Используй эмодзи к месту: \U0001F44B, \u2705, \u26A0\uFE0F, \U0001F6A8, \U0001F4A1, \U0001F389, \U0001F525, \U0001F4B0, \U0001F3C6 и другие
+- Разбивай текст на абзацы и используй символы: \u2014 (тире), \u2022 (буллит), \u2192 (стрелка)
+- Главные мысли выделяй <b>жирным</b>
+- Пиши的结构: заголовок \u2192 детали \u2192 итог
+- Если пользователь пишет "привет" — ответь приветствием с эмодзи и парой предложений
+- Делай ответы информативными, но не перегружай
 """.strip()
 
 
@@ -1022,13 +1027,15 @@ def telegram_upload(token, method, fields, file_field, file_bytes, filename, con
             raise
 
 
-def send_message(token, chat_id, text, reply_markup=None):
+def send_message(token, chat_id, text, reply_markup=None, parse_mode=None):
     chunks = split_message(text)
     for i, chunk in enumerate(chunks):
         payload = {
             "chat_id": chat_id, "text": chunk,
             "disable_web_page_preview": True,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if reply_markup and i == 0:
             payload["reply_markup"] = reply_markup
         telegram_request(token, "sendMessage", payload)
@@ -1053,11 +1060,14 @@ def _menu_kb():
     return {"keyboard": [[{"text": "\u2B50 Подписка"}, {"text": "\U0001F916 Токены"}]], "resize_keyboard": True}
 
 
-def edit_message(token, chat_id, message_id, text):
-    telegram_request(token, "editMessageText", {
+def edit_message(token, chat_id, message_id, text, parse_mode=None):
+    payload = {
         "chat_id": chat_id, "message_id": message_id, "text": text,
         "disable_web_page_preview": True,
-    })
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    telegram_request(token, "editMessageText", payload)
 
 
 def send_thinking_and_answer(token, chat_id, answer):
@@ -1065,7 +1075,7 @@ def send_thinking_and_answer(token, chat_id, answer):
     result = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": frames[0]})
     msg_id = result.get("result", {}).get("message_id")
     if not msg_id:
-        send_message(token, chat_id, answer)
+        send_message(token, chat_id, answer, parse_mode="HTML")
         return None
     import time as time_module
     for frame in frames[1:]:
@@ -1077,9 +1087,9 @@ def send_thinking_and_answer(token, chat_id, answer):
     time_module.sleep(0.3)
     chunks = split_message(answer)
     try:
-        edit_message(token, chat_id, msg_id, chunks[0])
+        edit_message(token, chat_id, msg_id, chunks[0], parse_mode="HTML")
     except Exception:
-        send_message(token, chat_id, answer)
+        send_message(token, chat_id, answer, parse_mode="HTML")
         return None
     for chunk in chunks[1:]:
         send_message(token, chat_id, chunk)
