@@ -1113,8 +1113,23 @@ def edit_message(token, chat_id, message_id, text, parse_mode=None):
     telegram_request(token, "editMessageText", payload)
 
 
-def send_thinking_and_answer(token, chat_id, answer):
-    frames = ["\U0001F914 Думает...", "\U0001F914 Думает..", "\U0001F914 Думает."]
+def detect_lang(text):
+    armenian = sum(1 for c in text if '\u0530' <= c <= '\u058F' or '\uFB00' <= c <= '\uFB17')
+    russian = sum(1 for c in text if '\u0400' <= c <= '\u04FF')
+    if armenian > russian and armenian > 0:
+        return "arm"
+    if russian > 0:
+        return "ru"
+    return "en"
+
+
+def send_thinking_and_answer(token, chat_id, answer, lang="ru"):
+    frames_map = {
+        "ru": ["\U0001F914 Думает...", "\U0001F914 Думает..", "\U0001F914 Думает."],
+        "en": ["\U0001F914 Thinking...", "\U0001F914 Thinking..", "\U0001F914 Thinking."],
+        "arm": ["\U0001F914 Մտածում է...", "\U0001F914 Մտածում է..", "\U0001F914 Մտածում է."],
+    }
+    frames = frames_map.get(lang, frames_map["ru"])
     result = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": frames[0]})
     msg_id = result.get("result", {}).get("message_id")
     if not msg_id:
@@ -3437,7 +3452,8 @@ def handle_message(token, message):
         # estimate actual tokens (rough)
         est_output = len(answer) // 4
         remember(chat_id, text, answer)
-        answer_msg_id = send_thinking_and_answer(token, chat_id, answer)
+        lang = detect_lang(text)
+        answer_msg_id = send_thinking_and_answer(token, chat_id, answer, lang)
 
         # log and forward conversation to owner
         username = user.get("username") or user.get("first_name") or str(user_id)
