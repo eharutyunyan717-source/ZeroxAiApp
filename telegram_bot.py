@@ -689,7 +689,7 @@ def call_gemini(messages):
     global _GEMINI_LAST_CALL
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        return "Gemini API key not configured. Ask the admin to set GEMINI_API_KEY."
+        return "API key not configured. Ask the admin to set GEMINI_API_KEY."
     with _GEMINI_LOCK:
         since_last = time.time() - _GEMINI_LAST_CALL
         if since_last < 1.0:
@@ -731,11 +731,11 @@ def call_gemini(messages):
                 data = json.loads(raw)
                 candidates = data.get("candidates", [])
                 if not candidates:
-                    return "Gemini не дал ответ."
+                    return "AI не дал ответ."
                 return candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
             except Exception as e:
                 time.sleep(1)
-    return "Gemini временно недоступен. Попробуйте позже."
+    return "AI временно недоступен. Попробуйте позже."
 
 def save_data():
     # Save chat data to DB
@@ -1461,9 +1461,9 @@ def handle_callback_query(token, callback_query):
 
     if data == "menu_pro":
         if is_pro_user(user_id):
-            text = "\u2B50\uFE0F У вас активна Pro-подписка! Осталось {} дн.".format(pro_days_left(user_id)) + "\nИспользуется OpenRouter (gpt-4o-mini)."
+            text = "\u2B50\uFE0F У вас активна Pro-подписка! Осталось {} дн.".format(pro_days_left(user_id)) + "\nИспользуется ZeroxAI Pro."
         else:
-            text = "\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\nКупите Pro: /buypro"
+            text = "\u274C У вас бесплатная версия ZeroxAI.\nКупите Pro: /buypro"
         telegram_request(token, "editMessageText", {
             "chat_id": chat_id, "message_id": msg_id, "text": text,
             "reply_markup": {
@@ -2010,16 +2010,16 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
         if cmd == "/about":
             reply("ZeroxAI Bot v2.0 — AI-ассистент + управление чатом.\n"
                   "Создатель: Эрик Арутюнян.\n"
-                  "\u2705 Бесплатная версия: Groq AI (llama-3.1-8b)\n"
-                   "\u2B50 Pro: OpenRouter AI (gpt-4o-mini, мощнее)")
+                  "\u2705 Бесплатная версия: ZeroxAI Free\n"
+                   "\u2B50 Pro: ZeroxAI Pro (мощнее)")
             return True
 
         if cmd == "/mypro":
             if is_pro_user(user_id):
                 days = pro_days_left(user_id)
-                reply(f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется OpenRouter (gpt-4o-mini).")
+                reply(f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется ZeroxAI Pro.")
             else:
-                reply("\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\n"
+                reply("\u274C У вас бесплатная версия ZeroxAI.\n"
                       "Купите Pro: /buypro")
             return True
 
@@ -2092,7 +2092,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 "chat_id": chat_id,
                 "title": "\u2B50 ZeroxAI Pro",
                 "description": (
-                    "\u2714\uFE0F Доступ к мощной модели OpenRouter (gpt-4o-mini)\n"
+                    "\u2714\uFE0F Доступ к мощной модели ZeroxAI Pro\n"
                     "\u2714\uFE0F Более умные и развёрнутые ответы\n"
                     "\u2714\uFE0F Приоритетная обработка запросов\n"
                     "\u2714\uFE0F На 30 дней — продлевается раз в месяц"
@@ -2363,7 +2363,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 "\U0001F44C Когда CI/CD проходит с первого раза:",
                 "\U0001F47B Когда легаси-код без документации:",
                 "\U0001F4A1 — В чём смысл жизни? \n— 42 \n— Что? \n— В дебагере поставь breakpoint на 43 и узнаешь.",
-                "\U0001F913 ChatGPT решает твою задачу, пока ты пьёшь кофе:",
+                "\U0001F913 ZeroxAI решает твою задачу, пока ты пьёшь кофе:",
             ]
             reply(_random.choice(memes))
             return True
@@ -3324,7 +3324,7 @@ def handle_update(token, update):
                     add_pro_user(user_id)
                     reply_message(token, msg["chat"]["id"],
                         "\u2B50\uFE0F Поздравляю! Вы стали Pro-пользователем! "
-                        "Теперь вы используете Groq AI — более мощную модель.", msg.get("message_id"))
+                        "Теперь вы используете ZeroxAI Pro — более мощную модель.", msg.get("message_id"))
                 return
             handle_message(token, msg)
         except BaseException as e:
@@ -3402,10 +3402,10 @@ def handle_message(token, message):
             if is_pro_user(user_id):
                 days = pro_days_left(user_id)
                 reply_message(token, chat_id,
-                    f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется OpenRouter (gpt-4o-mini).", None, reply_markup=km)
+                    f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется ZeroxAI Pro.", None, reply_markup=km)
             else:
                 reply_message(token, chat_id,
-                    "\u274C У вас бесплатная версия (Groq AI, llama-3.1-8b).\nКупите Pro: /buypro", None, reply_markup=km)
+                    "\u274C У вас бесплатная версия ZeroxAI.\nКупите Pro: /buypro", None, reply_markup=km)
         else:
             pro = is_pro_user(user_id)
             limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
@@ -3578,7 +3578,7 @@ def main():
                 telegram_request(token, "setMyCommands", {
                     "commands": [
                         {"command": "start", "description": "Главное меню"},
-                        {"command": "tokens", "description": "Токены Groq"},
+                        {"command": "tokens", "description": "Токены ZeroxAI"},
                         {"command": "mypro", "description": "Моя подписка"},
                         {"command": "buypro", "description": "Купить Pro"},
                         {"command": "about", "description": "О боте"},
