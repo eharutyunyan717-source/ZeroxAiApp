@@ -378,6 +378,12 @@ def init_db():
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS luck INT NOT NULL DEFAULT 0")
         except Exception:
             pass
+        # add username column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
         # add items column if missing (migration)
         try:
             with db_cursor() as cur:
@@ -962,12 +968,29 @@ def parse_user_ref(message, args):
 
 
 def resolve_username(token, username):
-    username = username.lstrip("@")
+    username = username.lstrip("@").lower()
+    try:
+        if DB_POOL:
+            with db_cursor() as cur:
+                cur.execute("SELECT user_id FROM users WHERE LOWER(username) = %s", (username,))
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+    except Exception:
+        pass
     try:
         result = telegram_request(token, "getChat", {"chat_id": f"@{username}"})
-        return result.get("result", {}).get("id")
+        uid = result.get("result", {}).get("id")
+        if uid:
+            try:
+                with db_cursor() as cur:
+                    cur.execute("UPDATE users SET username = %s WHERE user_id = %s AND username = ''", (username, uid))
+            except Exception:
+                pass
+            return uid
     except Exception:
-        return None
+        pass
+    return None
 
 
 def get_user_display(user):
@@ -3330,6 +3353,13 @@ def handle_message(token, message):
 
     if not user.get("is_bot"):
         increment_message_count(user_id)
+        uname = user.get("username", "")
+        if uname:
+            try:
+                with db_cursor() as cur:
+                    cur.execute("UPDATE users SET username = %s WHERE user_id = %s AND username != %s", (uname, user_id, uname))
+            except Exception:
+                pass
 
     if not should_respond(message):
         return
