@@ -185,6 +185,7 @@ MAX_TRANSFER_AMOUNT = 100_000_000_000_000_000
 MAX_BALANCE = 9_000_000_000_000_000_000
 PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500, "topaichatmeneger2026": 0}
 ADMIN_TICKET_TARGETS = ["@er1kos_designer"]
+AUTO_ANSWER_HOURS = 12
 
 
 def parse_transfer_input(args, message):
@@ -351,6 +352,18 @@ def init_db():
                     user_id BIGINT PRIMARY KEY,
                     period_start TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     tokens_used BIGINT NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    question TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    answered_at TIMESTAMPTZ,
+                    answer_text TEXT,
+                    answered_by BIGINT
                 );
             """)
         # add expires_at column if missing (migration)
@@ -1192,6 +1205,62 @@ def send_recent_conversations(token):
             print(f"Failed to send recent conversations: {e}", file=sys.stderr)
 
 
+def auto_answer_tickets(token):
+    while True:
+        try:
+            time.sleep(60)
+            if not DB_POOL:
+                continue
+            with db_cursor() as cur:
+                cur.execute(
+                    "SELECT id, user_id, chat_id, username, question FROM tickets WHERE status = 'open' AND created_at <= NOW() - INTERVAL '%s hours'",
+                    (AUTO_ANSWER_HOURS,)
+                )
+                rows = cur.fetchall()
+            for ticket_id, user_id, chat_id, username, question in rows:
+                try:
+                    prompt = f"Пользователь обратился в техподдержку с вопросом: {question}\n\nДай вежливый и полезный ответ от имени техподдержки бота ZeroxAI."
+                    messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
+                    answer = call_ai(messages, user_id)
+                    with db_cursor() as cur2:
+                        cur2.execute(
+                            "UPDATE tickets SET status = 'auto_answered', answer_text = %s, answered_at = NOW() WHERE id = %s AND status = 'open'",
+                            (answer, ticket_id)
+                        )
+                    try:
+                        telegram_request(token, "sendMessage", {
+                            "chat_id": chat_id,
+                            "text": f"\U0001F916 Автоответ на ваш запрос №{ticket_id} (ТП не ответила за {AUTO_ANSWER_HOURS}ч):\n\n{answer}",
+                            "parse_mode": "HTML",
+                        })
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"Failed to auto-answer ticket {ticket_id}: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"Auto-answer thread error: {e}", file=sys.stderr)
+        mention = f"@{username}" if username else f"id{user_id}"
+        ts = created_at.strftime("%d.%m.%Y %H:%M") if hasattr(created_at, "strftime") else str(created_at)[:16]
+        entry = (
+            f"#{i} {mention} [{ts}]\n"
+            f"\U0001F464 {user_msg[:300]}\n"
+            f"\U0001F916 {ai_resp[:300]}\n\n"
+        )
+        if len(current) + len(entry) > 3800:
+            parts.append(current)
+            current = entry
+        else:
+            current += entry
+    if current.strip():
+        parts.append(current)
+
+    for part in parts:
+        try:
+            reply_message(token, OWNER_ID, part, None)
+        except Exception as e:
+            print(f"Failed to send recent conversations: {e}", file=sys.stderr)
+
+
 def call_groq(messages, model=None):
     import http.client
     global ACTIVE_KEY_INDEX, TOKEN_USAGE
@@ -1444,7 +1513,7 @@ KNOWN_COMMANDS = {
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
     "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
-    "/hide", "/savehistory",
+    "/hide", "/savehistory", "/answer",
 }
 
 def should_respond(message):
@@ -2969,17 +3038,106 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if not text:
                 reply("Напишите ваш вопрос после /support. Например: /support У меня проблема с ботом")
                 return True
-            reply(f"\U0001F4E9 Ваш запрос отправлен в техподдержку. Ожидайте ответа.")
+            try:
+                with db_cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO tickets (user_id, chat_id, username, question) VALUES (%s, %s, %s, %s) RETURNING id",
+                        (user_id, chat_id, user.get("username", ""), text)
+                    )
+                    ticket_id = cur.fetchone()[0]
+            except Exception as e:
+                print(f"Failed to save ticket: {e}", file=sys.stderr)
+                reply("\u274C Ошибка при создании запроса. Попробуйте позже.")
+                return True
+            reply(f"\U0001F4E9 Ваш запрос №{ticket_id} отправлен в техподдержку. Ожидайте ответа.")
             cd = get_chat_data(chat_id)
+            notified = False
             for uid, rname in cd.get("users", {}).items():
                 if cd.get("roles", {}).get(rname, 0) >= 10:
                     try:
                         telegram_request(token, "sendMessage", {
                             "chat_id": uid,
-                            "text": f"\U0001F6E1\uFE0F Запрос в техподдержку от @{user.get('username', user_id)} (чат {chat_id}):\n{text}",
+                            "text": f"\U0001F6E1\uFE0F Запрос №{ticket_id} в техподдержку от @{user.get('username', user_id)} (чат {chat_id}):\n{text}\n\nОтветить: /answer {ticket_id} <текст>",
+                        })
+                        notified = True
+                    except Exception:
+                        pass
+            if not notified:
+                for target in ADMIN_TICKET_TARGETS:
+                    try:
+                        telegram_request(token, "sendMessage", {
+                            "chat_id": target,
+                            "text": f"\U0001F6E1\uFE0F Запрос №{ticket_id} в техподдержку от @{user.get('username', user_id)} (чат {chat_id}):\n{text}\n\nОтветить: /answer {ticket_id} <текст>",
                         })
                     except Exception:
                         pass
+            return True
+
+        if cmd == "/answer":
+            if not require_ts(): return True
+            if message.get("reply_to_message"):
+                support_text = cmd_text
+                if not support_text:
+                    reply("Напишите ответ после /answer. Например: /answer Ваш ответ")
+                    return True
+                try:
+                    with db_cursor() as cur:
+                        cur.execute(
+                            "SELECT id, user_id, chat_id, question, status FROM tickets WHERE status = 'open' ORDER BY id DESC LIMIT 1"
+                        )
+                        row = cur.fetchone()
+                except Exception as e:
+                    print(f"Failed to find ticket: {e}", file=sys.stderr)
+                    row = None
+                if not row:
+                    reply("\u274C Нет открытых тикетов для ответа.")
+                    return True
+                ticket_id, t_user_id, t_chat_id, question, status = row
+            elif args and args[0].isdigit():
+                ticket_id = int(args[0])
+                support_text = " ".join(args[1:]).strip()
+                if not support_text:
+                    reply("Напишите ответ после ID тикета. Пример: /answer 5 Ваш ответ")
+                    return True
+                try:
+                    with db_cursor() as cur:
+                        cur.execute(
+                            "SELECT user_id, chat_id, question, status FROM tickets WHERE id = %s", (ticket_id,)
+                        )
+                        row = cur.fetchone()
+                except Exception as e:
+                    print(f"Failed to find ticket {ticket_id}: {e}", file=sys.stderr)
+                    row = None
+                if not row:
+                    reply(f"\u274C Тикет №{ticket_id} не найден.")
+                    return True
+                t_user_id, t_chat_id, question, status = row
+                if status != "open":
+                    reply(f"\u274C Тикет №{ticket_id} уже закрыт.")
+                    return True
+            else:
+                reply("Использование: /answer <ID тикета> <текст ответа> или ответьте на сообщение о тикете: /answer <текст>")
+                return True
+            try:
+                with db_cursor() as cur:
+                    cur.execute(
+                        "UPDATE tickets SET status = 'answered', answer_text = %s, answered_by = %s, answered_at = NOW() WHERE id = %s AND status = 'open'",
+                        (support_text, user_id, ticket_id)
+                    )
+            except Exception as e:
+                print(f"Failed to update ticket {ticket_id}: {e}", file=sys.stderr)
+                reply("\u274C Ошибка при отправке ответа.")
+                return True
+            try:
+                mention = f"@{user.get('username')}" if user.get("username") else f"id{user_id}"
+                telegram_request(token, "sendMessage", {
+                    "chat_id": t_chat_id,
+                    "text": f"\U0001F6E1\uFE0F Ответ техподдержки на ваш запрос №{ticket_id}:\n\n{support_text}",
+                    "parse_mode": "HTML",
+                })
+                reply(f"\u2705 Ответ отправлен пользователю (тикет №{ticket_id}).")
+            except Exception as e:
+                reply(f"\u2705 Ответ сохранён, но не доставлен пользователю: {e}")
             return True
 
         if cmd == "/clean":
@@ -3394,6 +3552,12 @@ def main():
     # send recent conversations to owner on startup
     try:
         threading.Thread(target=send_recent_conversations, args=(token,), daemon=True).start()
+    except Exception:
+        pass
+
+    # start auto-answer thread for tickets
+    try:
+        threading.Thread(target=auto_answer_tickets, args=(token,), daemon=True).start()
     except Exception:
         pass
 
