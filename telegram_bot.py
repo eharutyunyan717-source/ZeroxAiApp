@@ -967,7 +967,7 @@ def parse_user_ref(message, args):
     return None
 
 
-def resolve_username(token, username):
+def resolve_username(token, username, chat_id=None):
     username = username.lstrip("@").lower()
     try:
         if DB_POOL:
@@ -978,18 +978,22 @@ def resolve_username(token, username):
                     return row[0]
     except Exception:
         pass
-    try:
-        result = telegram_request(token, "getChat", {"chat_id": f"@{username}"})
-        uid = result.get("result", {}).get("id")
-        if uid:
-            try:
-                with db_cursor() as cur:
-                    cur.execute("UPDATE users SET username = %s WHERE user_id = %s AND username = ''", (username, uid))
-            except Exception:
-                pass
-            return uid
-    except Exception:
-        pass
+    # try to find user in current group chat
+    if chat_id:
+        try:
+            admins = telegram_request(token, "getChatAdministrators", {"chat_id": chat_id}).get("result", [])
+            for a in admins:
+                u = a.get("user", {})
+                if u.get("username") and u["username"].lower() == username:
+                    uid = u["id"]
+                    try:
+                        with db_cursor() as cur:
+                            cur.execute("UPDATE users SET username = %s WHERE user_id = %s AND username = ''", (username, uid))
+                    except Exception:
+                        pass
+                    return uid
+        except Exception:
+            pass
     return None
 
 
@@ -1655,9 +1659,9 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 if amount <= 0:
                     reply("Сумма должна быть положительной.")
                     return True
-                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref)
+                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref, chat_id)
                 if not tid:
-                    reply("Пользователь не найден.")
+                    reply("Пользователь не найден. Попросите его написать боту любое сообщение, затем повторите.")
                     return True
                 add_balance(tid, amount)
                 reply(f"\U0001F4B0 Добавлено {fmt_coin(amount)} монет. Баланс получателя: {fmt_coin(get_balance(tid))}")
@@ -1676,9 +1680,9 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 if amount <= 0:
                     reply("Сумма должна быть положительной.")
                     return True
-                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref)
+                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref, chat_id)
                 if not tid:
-                    reply("Пользователь не найден.")
+                    reply("Пользователь не найден. Попросите его написать боту любое сообщение, затем повторите.")
                     return True
                 add_balance(tid, -amount)
                 reply(f"\U0001F4B0 Списано {fmt_coin(amount)} монет. Баланс получателя: {fmt_coin(get_balance(tid))}")
@@ -1751,9 +1755,9 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 if not target_ref and args:
                     target_ref = args[0]
                 if target_ref:
-                    tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref)
+                    tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref, chat_id)
                     if not tid:
-                        reply("Пользователь не найден.")
+                        reply("Пользователь не найден. Попросите его написать боту любое сообщение, затем повторите.")
                         return True
                     add_pro_user(tid)
                     reply(f"\u2B50\uFE0F Pro подписка выдана пользователю ID {tid} на 30 дней!")
@@ -1773,9 +1777,9 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     reply("Укажите значение удачи (0-100). Пример: /luckset @username 50")
                     return True
                 luck_val = max(0, min(100, luck_val))
-                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref)
+                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref, chat_id)
                 if not tid:
-                    reply("Пользователь не найден.")
+                    reply("Пользователь не найден. Попросите его написать боту любое сообщение, затем повторите.")
                     return True
                 set_luck(tid, luck_val)
                 reply(f"\U0001F340 Удача для ID {tid} установлена на {luck_val}%")
