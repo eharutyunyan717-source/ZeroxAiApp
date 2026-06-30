@@ -1135,7 +1135,7 @@ def send_thinking_and_answer(token, chat_id, answer):
         send_message(token, chat_id, answer, parse_mode="HTML")
         return None
     for chunk in chunks[1:]:
-        send_message(token, chat_id, chunk)
+        send_message(token, chat_id, chunk, parse_mode="HTML")
     return msg_id
 
 
