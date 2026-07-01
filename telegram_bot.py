@@ -1629,9 +1629,6 @@ def should_respond(message):
     if text.startswith("/") and text.split()[0].lower() in KNOWN_COMMANDS:
         return True
 
-    reply_to = message.get("reply_to_message")
-    if reply_to and reply_to.get("from", {}).get("id") == BOT_ID:
-        return True
     return False
 
 
