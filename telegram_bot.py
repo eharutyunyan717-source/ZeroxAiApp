@@ -184,6 +184,9 @@ FREE_COOLDOWN_SECONDS = 12 * 60 * 60
 MAX_TRANSFER_AMOUNT = 100_000_000_000_000_000
 MAX_BALANCE = 9_000_000_000_000_000_000
 PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500, "topaichatmeneger2026": 0}
+
+_slot_cooldowns = {}
+SLOT_COOLDOWN_SECONDS = 2
 ADMIN_TICKET_TARGETS = ["@er1kos_designer"]
 AUTO_ANSWER_HOURS = 12
 
@@ -1635,10 +1638,6 @@ def should_respond(message):
 def strip_mention(text):
     global BOT_USERNAME
     if not text:
-        return
-
-    # ignore forwarded commands
-    if text.startswith("/") and ("forward_from" in message or "forward_from_chat" in message):
         return text
     pattern = re.compile(rf"^\s*@{re.escape(BOT_USERNAME)}\s*", re.IGNORECASE)
     text = pattern.sub("", text).strip()
@@ -2592,6 +2591,13 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             # fall through to /slot
 
         if cmd == "/slot":
+            now = time.time()
+            last = _slot_cooldowns.get(chat_id, 0)
+            if now - last < SLOT_COOLDOWN_SECONDS:
+                reply(f"\u23F3 Не так быстро! Подожди {SLOT_COOLDOWN_SECONDS} сек.")
+                return True
+            _slot_cooldowns[chat_id] = now
+
             bet = 50
             for arg in args:
                 cleaned = arg.replace(",", "").replace(".", "")
