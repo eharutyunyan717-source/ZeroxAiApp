@@ -1635,6 +1635,10 @@ def should_respond(message):
 def strip_mention(text):
     global BOT_USERNAME
     if not text:
+        return
+
+    # ignore forwarded commands
+    if text.startswith("/") and ("forward_from" in message or "forward_from_chat" in message):
         return text
     pattern = re.compile(rf"^\s*@{re.escape(BOT_USERNAME)}\s*", re.IGNORECASE)
     text = pattern.sub("", text).strip()
