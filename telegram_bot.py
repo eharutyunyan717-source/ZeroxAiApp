@@ -186,6 +186,7 @@ MAX_BALANCE = 9_000_000_000_000_000_000
 PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500, "topaichatmeneger2026": 0}
 
 _slot_cooldowns = {}
+_slot_cooldown_lock = threading.Lock()
 SLOT_COOLDOWN_SECONDS = 2
 ADMIN_TICKET_TARGETS = ["@er1kos_designer"]
 AUTO_ANSWER_HOURS = 12
@@ -2591,12 +2592,18 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             # fall through to /slot
 
         if cmd == "/slot":
-            now = time.time()
-            last = _slot_cooldowns.get(chat_id, 0)
-            if now - last < SLOT_COOLDOWN_SECONDS:
+            # atomic per-chat cooldown
+            with _slot_cooldown_lock:
+                now = time.time()
+                last = _slot_cooldowns.get(chat_id, 0)
+                if now - last < SLOT_COOLDOWN_SECONDS:
+                    too_fast = True
+                else:
+                    too_fast = False
+                    _slot_cooldowns[chat_id] = now
+            if too_fast:
                 reply(f"\u23F3 Не так быстро! Подожди {SLOT_COOLDOWN_SECONDS} сек.")
                 return True
-            _slot_cooldowns[chat_id] = now
 
             bet = 50
             for arg in args:
