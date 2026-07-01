@@ -2606,45 +2606,23 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if has_active_item(user_id, "multiplier"):
                 multiplier = 2
 
-            max_attempts = 200 if want_jackpot else 50
-            dice_value = 1
-            last_msg_id = None
-            potion_expired = False
-
-            for attempt in range(max_attempts):
-                dice_value, msg_id = send_dice_get_value()
-                if msg_id:
-                    last_msg_id = msg_id
-                s1, s2, s3 = dice_symbols(dice_value)
-
-                if want_jackpot and is_jackpot(s1, s2, s3):
-                    break
-                if want_pair and is_pair(s1, s2, s3):
-                    break
-                if not want_pair and not want_jackpot:
-                    break
-
-                # delete losing message and retry
-                if msg_id and attempt < max_attempts - 1:
-                    try:
-                        telegram_request(token, "deleteMessage", {"chat_id": chat_id, "message_id": msg_id})
-                    except Exception:
-                        pass
-                time.sleep(0.3)
-            else:
-                # exhausted attempts - force win (potion already paid for)
-                win_sym = _random.choice(_SLOT_SYMS)
-                if want_jackpot:
-                    s1 = s2 = s3 = win_sym
-                else:
-                    s2 = s3 = win_sym  # guaranteed pair
-
-            # consume potion
+            # consume potion immediately (before roll)
             if potion_used:
                 user_items[potion_used]["qty"] -= 1
                 if user_items[potion_used]["qty"] <= 0:
                     del user_items[potion_used]
                 set_user_items(user_id, user_items)
+
+            # force win if potion is active — skip dice loop, directly set result
+            if want_jackpot:
+                s1 = s2 = s3 = _random.choice(_SLOT_SYMS)
+            elif want_pair:
+                win_sym = _random.choice(_SLOT_SYMS)
+                s1 = _random.choice(_SLOT_SYMS)
+                s2 = s3 = win_sym
+            else:
+                dice_value, _ = send_dice_get_value()
+                s1, s2, s3 = dice_symbols(dice_value)
 
             time.sleep(1)
 
@@ -2677,7 +2655,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             return True
 
         if cmd == "/shop":
-            lines = ["🏪 <b>Магазин</b>", "Купить: <code>/buy &lt;id&gt;</code>", ""]
+            lines = ["🏪 <b>Магазин</b>", 'Купить: /buy [id]', ""]
             for item_id, item in SHOP_ITEMS.items():
                 status = get_shop_status(user_id, item_id)
                 duration = ""
