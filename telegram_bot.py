@@ -1600,6 +1600,7 @@ KNOWN_COMMANDS = {
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
     "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
     "/hide", "/savehistory", "/answer",
+    "/giveall",
 }
 
 def should_respond(message):
@@ -1738,6 +1739,31 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     return True
                 add_balance(tid, -amount)
                 reply(f"\U0001F4B0 Списано {fmt_coin(amount)} монет. Баланс получателя: {fmt_coin(get_balance(tid))}")
+                return True
+
+            if cmd == "/giveall":
+                try:
+                    amount = int(args[0]) if args else 1000000
+                except ValueError:
+                    reply("Сумма должна быть числом.")
+                    return True
+                if amount <= 0:
+                    reply("Сумма должна быть положительной.")
+                    return True
+                with db_cursor() as cur:
+                    cur.execute("SELECT DISTINCT user_id FROM users")
+                    user_ids = [row[0] for row in cur.fetchall()]
+                if not user_ids:
+                    reply("Нет пользователей в БД.")
+                    return True
+                count = 0
+                for uid in user_ids:
+                    try:
+                        add_balance(uid, amount)
+                        count += 1
+                    except Exception:
+                        pass
+                reply(f"\U0001F4B0 Выдано {fmt_coin(amount)} каждому из {count} пользователей.")
                 return True
 
             if cmd == "/savehistory":
