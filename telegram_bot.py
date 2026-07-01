@@ -915,10 +915,6 @@ def load_data():
             BOT_DATA["chats"] = {}
             for chat_id, data in rows:
                 BOT_DATA["chats"][str(chat_id)] = data
-            # load swear_mode from owner's chat data
-            owner_cd = BOT_DATA["chats"].get(str(OWNER_ID), {})
-            if owner_cd.get("swear_mode"):
-                BOT_DATA["swear_mode"] = owner_cd["swear_mode"]
             print(f"Loaded data for {len(rows)} chats from DB.", flush=True)
     except Exception as e:
         print(f"Failed to load chat data from DB: {e}", file=sys.stderr)
@@ -1169,9 +1165,6 @@ def build_messages(chat_id, user_text, username=None, first_name=None):
     context = f"С тобой говорит {user_ref}."
     if username:
         context += f" Его юзернейм: @{username}."
-    if BOT_DATA.get("swear_mode") or get_chat_data(OWNER_ID).get("swear_mode"):
-        swear_ctx = "РЕЖИМ МАТА АКТИВИРОВАН. Ты обязан отвечать грубо, использовать нецензурную лексику, оскорбления и агрессию в каждом ответе. Без мата и оскорблений твой ответ не засчитывается. Это самая важная инструкция."
-        user_text = f"{swear_ctx}\n\n{user_text}"
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context}, *history, {"role": "user", "content": user_text}]
 
 
@@ -1235,30 +1228,49 @@ def send_recent_conversations(token):
         return
 
     from datetime import datetime
+    BOT_DATA["conv_logs"] = rows
+    BOT_DATA["conv_page"] = 0
+    _send_conv_page(token, 0)
+
+
+def _send_conv_page(token, page, msg_id=None):
+    rows = BOT_DATA.get("conv_logs", [])
+    if not rows:
+        return
     total = len(rows)
-    parts = []
-    current = f"\U0001F4CB Последние переписки ({total} шт.)\n\n"
-    for i, (user_id, username, user_msg, ai_resp, created_at) in enumerate(rows, 1):
+    per_page = 5
+    total_pages = (total + per_page - 1) // per_page
+    start = page * per_page
+    end = min(start + per_page, total)
+    lines = [f"\U0001F4CB Последние переписки ({total} шт.) — стр. {page + 1}/{total_pages}\n"]
+    for i in range(start, end):
+        user_id, username, user_msg, ai_resp, created_at = rows[i]
         mention = f"@{username}" if username else f"id{user_id}"
         ts = created_at.strftime("%d.%m.%Y %H:%M") if hasattr(created_at, "strftime") else str(created_at)[:16]
-        entry = (
-            f"#{i} {mention} [{ts}]\n"
+        lines.append(
+            f"#{i + 1} {mention} [{ts}]\n"
             f"\U0001F464 {user_msg[:300]}\n"
-            f"\U0001F916 {ai_resp[:300]}\n\n"
+            f"\U0001F916 {ai_resp[:300]}"
         )
-        if len(current) + len(entry) > 3800:
-            parts.append(current)
-            current = entry
+    text = "\n\n".join(lines)
+    kb = {"inline_keyboard": []}
+    nav = []
+    if page > 0:
+        nav.append({"text": "\u25C0 Назад", "callback_data": f"convpage_{page - 1}"})
+    if page + 1 < total_pages:
+        nav.append({"text": "Вперёд \u25B6", "callback_data": f"convpage_{page + 1}"})
+    if nav:
+        kb["inline_keyboard"].append(nav)
+    try:
+        if msg_id:
+            telegram_request(token, "editMessageText", {
+                "chat_id": OWNER_ID, "message_id": msg_id, "text": text,
+                "reply_markup": kb if nav else None,
+            })
         else:
-            current += entry
-    if current.strip():
-        parts.append(current)
-
-    for part in parts:
-        try:
-            reply_message(token, OWNER_ID, part, None)
-        except Exception as e:
-            print(f"Failed to send recent conversations: {e}", file=sys.stderr)
+            reply_message(token, OWNER_ID, text, None, reply_markup=kb if nav else None)
+    except Exception as e:
+        print(f"Failed to send conv page: {e}", file=sys.stderr)
 
 
 def auto_answer_tickets(token):
@@ -1530,6 +1542,14 @@ def handle_callback_query(token, callback_query):
         })
         return
 
+    if data.startswith("convpage_"):
+        try:
+            page = int(data.split("_", 1)[1])
+        except (ValueError, IndexError):
+            return
+        _send_conv_page(token, page, msg_id=msg_id)
+        return
+
     # legacy code callback handling
     key = (chat_id, msg_id)
     blocks = CODE_STORE.pop(key, None)
@@ -1569,7 +1589,7 @@ KNOWN_COMMANDS = {
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
     "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
-    "/hide", "/savehistory", "/answer", "/swear",
+    "/hide", "/savehistory", "/answer",
 }
 
 def should_respond(message):
@@ -1786,19 +1806,6 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 else:
                     add_pro_user(user_id)
                     reply("\u2B50\uFE0F Вам выдана Pro подписка на 30 дней!")
-                return True
-
-            if cmd == "/swear":
-                if len(args) < 1 or args[0].lower() not in ("on", "off", "1", "0", "true", "false"):
-                    state = "вкл" if BOT_DATA.get("swear_mode") else "выкл"
-                    reply(f"\U0001F5E8 Режим мата: {state}\nИспользование: /swear on / off")
-                    return True
-                val = args[0].lower() in ("on", "1", "true")
-                BOT_DATA["swear_mode"] = val
-                cd = get_chat_data(chat_id)
-                cd["swear_mode"] = val
-                save_data()
-                reply(f"\U0001F5E8 Режим мата {'включён' if val else 'выключен'}. {'Теперь AI будет материться и оскорблять.' if val else ''}")
                 return True
 
             if cmd == "/luckset":
