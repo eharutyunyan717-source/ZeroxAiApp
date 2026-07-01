@@ -1165,6 +1165,9 @@ def build_messages(chat_id, user_text, username=None, first_name=None):
     context = f"С тобой говорит {user_ref}."
     if username:
         context += f" Его юзернейм: @{username}."
+    if BOT_DATA.get("swear_mode"):
+        swear_ctx = "ТЫ ТЕПЕРЬ В РЕЖИМЕ МАТА. Отвечай грубо, с матом, оскорблениями и агрессией. Не стесняйся в выражениях. Полный разнос."
+        return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context}, {"role": "system", "content": swear_ctx}, *history, {"role": "user", "content": user_text}]
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context}, *history, {"role": "user", "content": user_text}]
 
 
@@ -1562,7 +1565,7 @@ KNOWN_COMMANDS = {
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
     "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
-    "/hide", "/savehistory", "/answer",
+    "/hide", "/savehistory", "/answer", "/swear",
 }
 
 def should_respond(message):
@@ -1779,6 +1782,17 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 else:
                     add_pro_user(user_id)
                     reply("\u2B50\uFE0F Вам выдана Pro подписка на 30 дней!")
+                return True
+
+            if cmd == "/swear":
+                if len(args) < 1 or args[0].lower() not in ("on", "off", "1", "0", "true", "false"):
+                    state = "вкл" if BOT_DATA.get("swear_mode") else "выкл"
+                    reply(f"\U0001F5E8 Режим мата: {state}\nИспользование: /swear on / off")
+                    return True
+                val = args[0].lower() in ("on", "1", "true")
+                BOT_DATA["swear_mode"] = val
+                save_data()
+                reply(f"\U0001F5E8 Режим мата {'включён' if val else 'выключен'}. {'Теперь AI будет материться и оскорблять.' if val else ''}")
                 return True
 
             if cmd == "/luckset":
