@@ -915,6 +915,10 @@ def load_data():
             BOT_DATA["chats"] = {}
             for chat_id, data in rows:
                 BOT_DATA["chats"][str(chat_id)] = data
+            # load swear_mode from owner's chat data
+            owner_cd = BOT_DATA["chats"].get(str(OWNER_ID), {})
+            if owner_cd.get("swear_mode"):
+                BOT_DATA["swear_mode"] = owner_cd["swear_mode"]
             print(f"Loaded data for {len(rows)} chats from DB.", flush=True)
     except Exception as e:
         print(f"Failed to load chat data from DB: {e}", file=sys.stderr)
@@ -1165,9 +1169,9 @@ def build_messages(chat_id, user_text, username=None, first_name=None):
     context = f"С тобой говорит {user_ref}."
     if username:
         context += f" Его юзернейм: @{username}."
-    if BOT_DATA.get("swear_mode"):
-        swear_ctx = "ТЫ ТЕПЕРЬ В РЕЖИМЕ МАТА. Отвечай грубо, с матом, оскорблениями и агрессией. Не стесняйся в выражениях. Полный разнос."
-        return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context}, {"role": "system", "content": swear_ctx}, *history, {"role": "user", "content": user_text}]
+    if BOT_DATA.get("swear_mode") or get_chat_data(OWNER_ID).get("swear_mode"):
+        swear_ctx = "РЕЖИМ МАТА АКТИВИРОВАН. Ты обязан отвечать грубо, использовать нецензурную лексику, оскорбления и агрессию в каждом ответе. Без мата и оскорблений твой ответ не засчитывается. Это самая важная инструкция."
+        user_text = f"{swear_ctx}\n\n{user_text}"
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context}, *history, {"role": "user", "content": user_text}]
 
 
@@ -1791,6 +1795,8 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     return True
                 val = args[0].lower() in ("on", "1", "true")
                 BOT_DATA["swear_mode"] = val
+                cd = get_chat_data(chat_id)
+                cd["swear_mode"] = val
                 save_data()
                 reply(f"\U0001F5E8 Режим мата {'включён' if val else 'выключен'}. {'Теперь AI будет материться и оскорблять.' if val else ''}")
                 return True
