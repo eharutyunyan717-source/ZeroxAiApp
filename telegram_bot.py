@@ -2634,6 +2634,8 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 want_pair = True
                 potion_used = "luck_potion"
 
+            print(f"[SLOT] user={user_id} items={user_items} want_pair={want_pair} want_jackpot={want_jackpot} potion={potion_used}", flush=True)
+
             # check multiplier
             multiplier = 1
             if has_active_item(user_id, "multiplier"):
@@ -2656,6 +2658,8 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             else:
                 dice_value, _ = send_dice_get_value()
                 s1, s2, s3 = dice_symbols(dice_value)
+
+            print(f"[SLOT] result s1={s1} s2={s2} s3={s3} is_pair={is_pair(s1,s2,s3)} is_jackpot={is_jackpot(s1,s2,s3)}", flush=True)
 
             time.sleep(1)
 
