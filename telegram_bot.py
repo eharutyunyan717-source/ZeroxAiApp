@@ -528,11 +528,13 @@ def consume_item(user_id, item_key):
 
 
 _user_locks = {}
+_locks_dict_lock = threading.Lock()
 
 def get_user_lock(user_id):
-    if user_id not in _user_locks:
-        _user_locks[user_id] = threading.Lock()
-    return _user_locks[user_id]
+    with _locks_dict_lock:
+        if user_id not in _user_locks:
+            _user_locks[user_id] = threading.Lock()
+        return _user_locks[user_id]
 
 
 SHOP_ITEMS = {
