@@ -527,16 +527,6 @@ def consume_item(user_id, item_key):
     return False
 
 
-_user_locks = {}
-_locks_dict_lock = threading.Lock()
-
-def get_user_lock(user_id):
-    with _locks_dict_lock:
-        if user_id not in _user_locks:
-            _user_locks[user_id] = threading.Lock()
-        return _user_locks[user_id]
-
-
 SHOP_ITEMS = {
     "luck_potion": {"name": "🍀 Зелье удачи", "price": 100000, "type": "single", "description": "Гарантирует совпадение пары на слоте (1 spin). Перебрасывает стикер пока не выпадут совпадающие фрукты!"},
     "jackpot_potion": {"name": "🍀✨ Зелье джекпота", "price": 500000, "type": "single", "description": "Гарантирует джекпот на слоте (1 spin). Перебрасывает стикер пока не выпадут 3 одинаковых символа!"},
@@ -3448,9 +3438,8 @@ def handle_message(token, message):
         cmd_name = text.split()[0]
         if "@" in cmd_name:
             text = text.replace(cmd_name, cmd_name.split("@")[0], 1)
-        with get_user_lock(user_id):
-            if handle_command(token, message, chat, user, chat_id, user_id, text):
-                return
+        if handle_command(token, message, chat, user, chat_id, user_id, text):
+            return
         return  # don't send unknown commands to AI
 
     # handle reply keyboard buttons
