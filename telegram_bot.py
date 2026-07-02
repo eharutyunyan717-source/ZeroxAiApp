@@ -850,6 +850,9 @@ SYSTEM_PROMPT = """
   - на русском: "Мой создатель Эрик Арутюнян"
   - на армянском: "Իմ ստեղծողը Էրիկ Հարությունյանն է"
   - на английском: "My creator is Erik Harutyunyan"
+- Если пользователь спрашивает "какая у тебя модель", "ты какой модели", "zeroxai pro или free" или похожий вопрос:
+  - если у пользователя Pro-подписка → ответь "ZeroxAI Pro"
+  - если Free → ответь "ZeroxAI Free"
 - Пиши коротко, без лишних фраз и воды. Ответил — замолчи.
 - Обращайся к пользователю по имени или @username, если знаешь. Это делает общение персонализированным.
 - Не высмеивай ошибки пользователя. Мягко понимай смысл и помогай.
@@ -1159,12 +1162,14 @@ def split_message(text):
     return [text[index:index + MAX_TELEGRAM_MESSAGE] for index in range(0, len(text), MAX_TELEGRAM_MESSAGE)]
 
 
-def build_messages(chat_id, user_text, username=None, first_name=None):
+def build_messages(chat_id, user_text, username=None, first_name=None, user_id=None):
     history = USER_HISTORIES.get(chat_id, [])[-MAX_HISTORY_MESSAGES:]
     user_ref = first_name or username or "Пользователь"
     context = f"С тобой говорит {user_ref}."
     if username:
         context += f" Его юзернейм: @{username}."
+    if user_id and is_pro_user(user_id):
+        context += " У пользователя Pro-подписка."
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context}, *history, {"role": "user", "content": user_text}]
 
 
@@ -3480,7 +3485,7 @@ def handle_message(token, message):
         return
 
     try:
-        answer = call_ai(build_messages(chat_id, text, user.get("username"), user.get("first_name")), user_id)
+        answer = call_ai(build_messages(chat_id, text, user.get("username"), user.get("first_name"), user_id), user_id)
         # estimate actual tokens (rough)
         est_output = len(answer) // 4
         remember(chat_id, text, answer)
@@ -3579,7 +3584,7 @@ def webhook_handler_factory(token):
                         resp = {"error": "Пустое сообщение"}
                         self.send_response(400)
                     else:
-                        messages = build_messages(chat_id, user_text, data.get("username"), data.get("first_name"))
+                        messages = build_messages(chat_id, user_text, data.get("username"), data.get("first_name"), user_id)
                         answer = call_ai(messages, int(user_id)) if user_id else call_groq(messages)
                         remember(chat_id, user_text, answer)
                         resp = {"response": answer}
