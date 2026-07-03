@@ -13,3 +13,9 @@ bot_pid.txt
 *.mp4
 git
 ZeroxAiApp/
+.idea/
+cd
+railway
+zerox-code/dist-electron/
+zerox-code/dist-react/
+zerox-code/node_modules/

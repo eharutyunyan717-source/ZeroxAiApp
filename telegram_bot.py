@@ -1,34 +1,59 @@
 import io
 import json
 import os
+import psycopg2
 import random as _random
 import re
 import socket
 import ssl
 import struct
+import sys
+import signal
+import datetime
+import threading
 import time
 import urllib.error
 import urllib.request
 import urllib.parse
+from psycopg2 import pool
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL = "openai/gpt-oss-120b"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 REQUEST_TIMEOUT = 90
 MAX_HISTORY_MESSAGES = 24
 MAX_TELEGRAM_MESSAGE = 3900
-DATA_FILE = os.getenv("DATA_FILE", "data.json")
-TOKEN_LIMIT = 100000
+DATA_FILE = os.environ.get("DATA_PATH") or ("/data/data.json" if os.path.exists("/data") else "data.json")
 
 ACTIVE_KEY_INDEX = 0
+TOKEN_LIMIT = 100000
+_GEMINI_LAST_CALL = 0
+_GEMINI_LOCK = threading.Lock()
 USER_HISTORIES = {}
+MESSAGE_COUNTS = {}
+MESSAGE_COUNTS_LOCK = threading.Lock()
 BOT_ID = None
 BOT_USERNAME = None
+
+
+def increment_message_count(user_id):
+    if not user_id:
+        return
+    with MESSAGE_COUNTS_LOCK:
+        MESSAGE_COUNTS[user_id] = MESSAGE_COUNTS.get(user_id, 0) + 1
 CODE_STORE = {}
 BOT_DATA = {}
 TOKEN_USAGE = {"prompt": 0, "completion": 0, "total": 0}
+_testshop_running = False
 RCON_SERVERS = {}  # chat_id -> {"host": str, "port": int, "password": str}
 STICKER_POOL = []  # случайные стикеры для слота
+_BEN_FILES = {"yes": None, "no": None}
+_BEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "")
+_BEN_PATHS = {
+    "yes": os.path.join(_BEN_DIR, "ben_yes.mp4"),
+    "no": os.path.join(_BEN_DIR, "ben_no.mp4"),
+}
 
 
 def rcon_packet(req_id, ptype, payload):
@@ -132,6 +157,10 @@ def send_random_sticker(token, chat_id):
         pass
 
 
+def load_ben_stickers(token):
+    pass
+
+
 def load_dotenv():
     try:
         with open(".env", encoding="utf-8") as f:
@@ -146,127 +175,652 @@ def load_dotenv():
 
 load_dotenv()
 
-TELEGRAM_BASE_URL = os.getenv("TELEGRAM_PROXY_URL", "https://dry-water-835f.eharutyunyan580.workers.dev")
 
+TELEGRAM_BASE_URL = "https://api.telegram.org"
+DB_POOL = None
+
+WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN")
 STARTING_BALANCE = 500
+FREE_COOLDOWN_SECONDS = 12 * 60 * 60
+MAX_TRANSFER_AMOUNT = 100_000_000_000_000_000_000_000
+MAX_BALANCE = 9_000_000_000_000_000_000_000_000
+PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500, "topaichatmeneger2026": 0}
+ADMIN_TICKET_TARGETS = ["@er1kos_designer"]
+AUTO_ANSWER_HOURS = 12
 
-SHOP_ITEMS = {
-    "luck": {
-        "id": "luck_2x",
-        "name": "\U0001F9EA Зелье 2\u00d7 удачи",
-        "price": 100000,
-        "desc": "Следующая игра в казино: +50% шанс выигрыша",
-    },
-    "coins": {
-        "id": "coins_2x",
-        "name": "\U0001F9EA Зелье 2\u00d7 монет",
-        "price": 150000,
-        "desc": "Следующий выигрыш в казино: монеты \u00d72",
-    },
-}
+
+def parse_transfer_input(args, message):
+    reply_msg = message.get("reply_to_message")
+    if reply_msg:
+        target_ref = reply_msg.get("from", {}).get("id")
+        if not target_ref:
+            return None, None
+        for arg in args:
+            if arg.lstrip("-").isdigit():
+                amount = int(arg)
+                return target_ref, amount
+        return target_ref, None
+
+    if len(args) < 2:
+        return None, None
+
+    target_arg = args[0].strip()
+    if target_arg.isdigit():
+        target_ref = int(target_arg)
+    elif target_arg.startswith("@"):
+        target_ref = target_arg
+    else:
+        return None, None
+
+    for arg in args[1:]:
+        if arg.lstrip("-").isdigit():
+            amount = int(arg)
+            return target_ref, amount
+
+    return target_ref, None
+
 
 def get_balance(user_id):
-    if "balances" not in BOT_DATA:
-        BOT_DATA["balances"] = {}
-    return BOT_DATA["balances"].get(str(user_id), 0)
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
+            result = cur.fetchone()
+            return result[0] if result else 0
+    except Exception as e:
+        print(f"get_balance({user_id}) error: {e}", file=sys.stderr, flush=True)
+        return 0
 
 def set_balance(user_id, amount):
-    BOT_DATA.setdefault("balances", {})[str(user_id)] = amount
-    save_data()
+    amount = int(amount)
+    if amount < 0:
+        amount = 0
+    if amount > MAX_BALANCE:
+        amount = MAX_BALANCE
+    try:
+        with db_cursor() as cur:
+            cur.execute("""
+                INSERT INTO users (user_id, balance, max_balance, created_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE SET
+                    balance = %s,
+                    max_balance = GREATEST(users.max_balance, %s)
+            """, (user_id, amount, amount, amount, amount))
+    except Exception as e:
+        print(f"Failed to set balance for {user_id}: {e}", file=sys.stderr)
 
 def add_balance(user_id, amount):
-    bal = get_balance(user_id) + amount
-    set_balance(user_id, bal)
-    return bal
+    amount = int(amount)
+    try:
+        with db_cursor() as cur:
+            cur.execute("""
+                UPDATE users SET
+                    balance = LEAST(GREATEST(balance + %s, 0), %s),
+                    max_balance = GREATEST(max_balance, LEAST(GREATEST(balance + %s, 0), %s))
+                WHERE user_id = %s
+                RETURNING balance
+            """, (amount, MAX_BALANCE, amount, MAX_BALANCE, user_id))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+            # user does not exist yet — insert
+            cur.execute("""
+                INSERT INTO users (user_id, balance, max_balance, created_at)
+                VALUES (%s, LEAST(GREATEST(%s, 0), %s), LEAST(GREATEST(%s, 0), %s), NOW())
+                RETURNING balance
+            """, (user_id, amount, MAX_BALANCE, amount, MAX_BALANCE))
+            return cur.fetchone()[0]
+    except Exception as e:
+        print(f"Failed to add balance for {user_id}: {e}", file=sys.stderr)
+        return get_balance(user_id)
 
-def get_claim(user_id):
-    return BOT_DATA.get("claims", {}).get(str(user_id), {})
+def get_claim(user_id, claim_type):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT claim_time FROM claims WHERE user_id = %s AND claim_type = %s", (user_id, claim_type))
+            result = cur.fetchone()
+            return {"time": result[0].timestamp()} if result else {}
+    except Exception:
+        return {}
 
 def set_claim(user_id, claim_type):
-    BOT_DATA.setdefault("claims", {})[str(user_id)] = {"type": claim_type, "time": time.time()}
-    save_data()
+    try:
+        with db_cursor() as cur:
+            cur.execute("INSERT INTO claims (user_id, claim_type) VALUES (%s, %s) ON CONFLICT (user_id, claim_type) DO UPDATE SET claim_time = NOW()",
+                        (user_id, claim_type))
+    except Exception as e:
+        print(f"Failed to set claim for {user_id}: {e}", file=sys.stderr)
 
-def get_inventory(user_id):
-    return BOT_DATA.setdefault("inventory", {}).get(str(user_id), {})
+def redeem_promo(user_id, code):
+    normalized = code.strip().lower()
+    if normalized not in PROMO_REWARDS:
+        return False, "Неверный промокод."
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT 1 FROM claims WHERE user_id = %s AND claim_type = %s", (user_id, f"promo_{normalized}"))
+            if cur.fetchone():
+                return False, "Вы уже активировали этот промокод."
+            cur.execute("INSERT INTO claims (user_id, claim_type) VALUES (%s, %s)", (user_id, f"promo_{normalized}"))
+            base = PROMO_REWARDS[normalized]
+            reward = base if base > 0 else (25000 if is_pro_user(user_id) else 5000)
+            add_balance(user_id, reward)
+            return True, reward
+    except Exception as e:
+        return False, f"Ошибка базы данных: {e}"
 
-def set_inventory(user_id, inv):
-    BOT_DATA.setdefault("inventory", {})[str(user_id)] = inv
-    save_data()
 
-def add_item(user_id, item_id, count=1):
-    inv = get_inventory(user_id)
-    inv[item_id] = inv.get(item_id, 0) + count
-    set_inventory(user_id, inv)
+def can_claim_free(user_id):
+    claim = get_claim(user_id, "free")
+    if not claim:
+        return True, None
+    elapsed = time.time() - claim.get("time", 0)
+    if elapsed < FREE_COOLDOWN_SECONDS:
+        remaining = int(FREE_COOLDOWN_SECONDS - elapsed)
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+        return False, f"Следующий бонус доступен через {hours}ч {minutes}м."
+    return True, None
 
-def remove_item(user_id, item_id, count=1):
-    inv = get_inventory(user_id)
-    if inv.get(item_id, 0) < count:
+def init_db():
+    global DB_POOL
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        print("DATABASE_URL not set, database functions will be disabled.", file=sys.stderr)
+        return
+    try:
+        DB_POOL = pool.SimpleConnectionPool(1, 5, dsn=db_url)
+        with db_cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    balance BIGINT NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS claims (
+                    user_id BIGINT,
+                    claim_type VARCHAR(255),
+                    claim_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, claim_type)
+                );
+                CREATE TABLE IF NOT EXISTS chat_data (
+                    chat_id BIGINT PRIMARY KEY,
+                    data JSONB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS pro_users (
+                    user_id BIGINT PRIMARY KEY,
+                    purchased_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '30 days'
+                );
+                CREATE TABLE IF NOT EXISTS user_tokens (
+                    user_id BIGINT PRIMARY KEY,
+                    period_start TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    tokens_used BIGINT NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    question TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    answered_at TIMESTAMPTZ,
+                    answer_text TEXT,
+                    answered_by BIGINT
+                );
+            """)
+        # add expires_at column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE pro_users ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '30 days'")
+        except Exception:
+            pass
+        # add luck column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS luck INT NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+        # add username column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+        # add items column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS items JSONB")
+        except Exception:
+            pass
+        # add items column if missing (migration) - this was a typo in the original, fixing it to be correct
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS items JSONB")
+        except Exception:
+            pass
+        # add created_at column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        except Exception:
+            pass
+        # add max_balance column if missing (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS max_balance BIGINT NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+        # migrate balance columns to NUMERIC for large values
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ALTER COLUMN balance TYPE NUMERIC(40,0) USING balance::NUMERIC")
+                cur.execute("ALTER TABLE users ALTER COLUMN max_balance TYPE NUMERIC(40,0) USING COALESCE(max_balance, 0)::NUMERIC")
+        except Exception:
+            pass
+        # create conversation_log table
+        try:
+            with db_cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS conversation_log (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        chat_id BIGINT NOT NULL,
+                        username TEXT,
+                        user_message TEXT NOT NULL,
+                        ai_response TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+        except Exception:
+            pass
+        print("Database initialized successfully.", flush=True)
+    except Exception as e:
+        print(f"Failed to initialize database: {e}", file=sys.stderr)
+        DB_POOL = None
+
+class db_cursor:
+    def __enter__(self):
+        if not DB_POOL:
+            raise RuntimeError("Database is not available.")
+        self.conn = DB_POOL.getconn()
+        # Проверка живости соединения
+        try:
+            self.conn.cursor().execute("SELECT 1")
+        except Exception:
+            # Убитое соединение — заменяем
+            DB_POOL.putconn(self.conn, close=True)
+            self.conn = DB_POOL.getconn()
+        self.cur = self.conn.cursor()
+        return self.cur
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            self.conn.rollback()
+        else:
+            self.conn.commit()
+        self.cur.close()
+        DB_POOL.putconn(self.conn)
+
+def pro_days_left(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT EXTRACT(EPOCH FROM expires_at - NOW()) / 86400 FROM pro_users WHERE user_id = %s AND expires_at > NOW()", (user_id,))
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
+def is_pro_user(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT expires_at FROM pro_users WHERE user_id = %s AND expires_at > NOW()", (user_id,))
+            return cur.fetchone() is not None
+    except Exception:
         return False
-    inv[item_id] -= count
-    if inv[item_id] <= 0:
-        del inv[item_id]
-    set_inventory(user_id, inv)
-    return True
 
-def get_active_buffs(user_id):
-    return BOT_DATA.setdefault("active_buffs", {}).get(str(user_id), {})
+def add_pro_user(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("INSERT INTO pro_users (user_id, expires_at) VALUES (%s, NOW() + INTERVAL '30 days') ON CONFLICT (user_id) DO UPDATE SET expires_at = NOW() + INTERVAL '30 days'", (user_id,))
+    except Exception as e:
+        print(f"add_pro_user({user_id}) error: {e}", file=sys.stderr)
 
-def set_active_buff(user_id, buff_id, active=True):
-    buffs = BOT_DATA.setdefault("active_buffs", {})
-    uid = str(user_id)
-    if active:
-        buffs.setdefault(uid, {})[buff_id] = True
-    else:
-        if uid in buffs and buff_id in buffs[uid]:
-            del buffs[uid][buff_id]
-            if not buffs[uid]:
-                del buffs[uid]
-    save_data()
+def get_luck(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT luck FROM users WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return row[0] if row else 0
+    except Exception:
+        return 0
 
-def clear_buff(user_id, buff_id):
-    set_active_buff(user_id, buff_id, False)
+def set_luck(user_id, value):
+    try:
+        with db_cursor() as cur:
+            cur.execute("INSERT INTO users (user_id, balance, luck) VALUES (%s, 0, %s) ON CONFLICT (user_id) DO UPDATE SET luck = %s", (user_id, value, value))
+    except Exception as e:
+        print(f"set_luck({user_id}) error: {e}", file=sys.stderr)
 
-def find_shop_item(query):
-    q = query.lower().strip()
-    aliases = {
-        "luck": "luck", "удача": "luck", "удачи": "luck", "luck_2x": "luck",
-        "coins": "coins", "монеты": "coins", "монет": "coins", "coins_2x": "coins",
-    }
-    key = aliases.get(q, q)
-    return SHOP_ITEMS.get(key)
+_USER_ITEM_LOCKS = {}
+_USER_ITEM_LOCK_MUTEX = threading.Lock()
 
-def format_inventory(user_id):
-    inv = get_inventory(user_id)
-    buffs = get_active_buffs(user_id)
-    lines = ["\U0001F392 Ваш инвентарь:"]
-    if not inv and not buffs:
-        lines.append("Пусто. Загляните в /shop")
-        return "\n".join(lines)
-    for item_key, item in SHOP_ITEMS.items():
-        count = inv.get(item["id"], 0)
-        if count:
-            lines.append(f"{item['name']} — {count} шт.")
-    if buffs:
-        lines.append("")
-        lines.append("\u26A1 Активные эффекты:")
-        for buff_id in buffs:
-            for item in SHOP_ITEMS.values():
-                if item["id"] == buff_id:
-                    lines.append(f"{item['name']} (на следующую игру)")
-                    break
-    return "\n".join(lines)
+def _user_item_lock(user_id):
+    with _USER_ITEM_LOCK_MUTEX:
+        if user_id not in _USER_ITEM_LOCKS:
+            _USER_ITEM_LOCKS[user_id] = threading.Lock()
+        return _USER_ITEM_LOCKS[user_id]
 
-def apply_luck_buff(won):
-    if won:
+
+def get_user_items(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT items FROM users WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return json.loads(row[0]) if row and row[0] else {}
+    except Exception:
+        return {}
+
+
+def set_user_items(user_id, items):
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (user_id, balance, luck, items) VALUES (%s, 0, 0, %s) ON CONFLICT (user_id) DO UPDATE SET items = %s",
+                (user_id, json.dumps(items), json.dumps(items)),
+            )
+    except Exception as e:
+        print(f"set_user_items({user_id}) error: {e}", file=sys.stderr)
+
+def has_active_item(user_id, item_key):
+    items = get_user_items(user_id)
+    item = items.get(item_key)
+    if not item: return False
+    return time.time() < item.get("expires_at", 0)
+
+
+def consume_item(user_id, item_key):
+    items = get_user_items(user_id)
+    if item_key in items:
+        del items[item_key]
+        set_user_items(user_id, items)
         return True
-    return _random.random() < 0.5
+    return False
 
-def apply_coins_buff(payout):
-    return payout * 2
+
+SHOP_ITEMS = {
+    "luck_potion": {"name": "🍀 Зелье удачи", "price": 100000, "type": "single", "description": "Гарантирует совпадение пары на слоте (1 spin). Перебрасывает стикер пока не выпадут совпадающие фрукты!"},
+    "jackpot_potion": {"name": "🍀✨ Зелье джекпота", "price": 500000, "type": "single", "description": "Гарантирует джекпот на слоте (1 spin). Перебрасывает стикер пока не выпадут 3 одинаковых символа!"},
+    "multiplier": {"name": "💰 Зелье 2х монет", "price": 200000, "type": "timed", "duration_min": 30, "description": "Удваивает все выигрыши в казино на 30 минут."},
+}
+
+def short_num(n):
+    suffixes = [
+        (10**24, "Sp"),
+        (10**21, "Sx"),
+        (10**18, "Qn"),
+        (10**15, "Q"),
+        (10**12, "T"),
+        (10**9, "B"),
+        (10**6, "M"),
+        (10**3, "k"),
+    ]
+    for divider, suffix in suffixes:
+        if n >= divider:
+            return f"{n/divider:.1f}{suffix}"
+    return str(n)
+
+def fmt_coin(n):
+    return f"{n:,} ({short_num(n)})"
+
+
+def format_duration(minutes):
+    if minutes <= 0:
+        return "сейчас"
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours and mins:
+        return f"{hours}ч {mins}мин"
+    if hours:
+        return f"{hours}ч"
+    return f"{minutes}мин"
+
+
+def get_shop_status(user_id, item_id):
+    item = SHOP_ITEMS.get(item_id)
+    if not item:
+        return ""
+    if item["type"] == "timed":
+        if has_active_item(user_id, item_id):
+            items = get_user_items(user_id)
+            remaining = int(items[item_id]["expires_at"] - time.time())
+            return f" ✅ Активно · ещё {format_duration(remaining // 60)}"
+        return ""
+    # single-use: check if already owned
+    items = get_user_items(user_id)
+    if items.get(item_id):
+        return " ✅ В наличии"
+    return ""
+
+
+FREE_TOKEN_LIMIT = 2000
+PRO_TOKEN_LIMIT = 10000
+FREE_PERIOD_HOURS = 24
+PRO_PERIOD_HOURS = 12
+
+def get_token_usage(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT period_start, tokens_used FROM user_tokens WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return row  # (period_start, tokens_used) or None
+    except Exception:
+        return None
+
+def try_use_tokens(user_id, input_tokens, output_tokens):
+    if user_id == 6734685656:
+        return True, 999999999
+    pro = is_pro_user(user_id)
+    limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
+    period_hours = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
+    total = input_tokens + output_tokens
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT period_start, tokens_used FROM user_tokens WHERE user_id = %s FOR UPDATE", (user_id,))
+            row = cur.fetchone()
+            if row is None:
+                if total > limit:
+                    return False, limit
+                cur.execute("INSERT INTO user_tokens (user_id, period_start, tokens_used) VALUES (%s, NOW(), %s)", (user_id, total))
+                return True, limit - total
+            period_start, tokens_used = row
+            cur.execute("SELECT EXTRACT(EPOCH FROM NOW() - %s) / 3600", (period_start,))
+            hours_passed = float(cur.fetchone()[0])
+            if hours_passed >= period_hours:
+                if total > limit:
+                    return False, limit
+                cur.execute("UPDATE user_tokens SET period_start = NOW(), tokens_used = %s WHERE user_id = %s", (total, user_id))
+                return True, limit - total
+            remaining = limit - (tokens_used + total)
+            if remaining < 0:
+                return False, limit - tokens_used
+            cur.execute("UPDATE user_tokens SET tokens_used = tokens_used + %s WHERE user_id = %s", (total, user_id))
+            return True, max(0, remaining)
+    except Exception as e:
+        print(f"try_use_tokens({user_id}) error: {e}", file=sys.stderr)
+        return False, 0
+
+def get_token_remaining(user_id):
+    pro = is_pro_user(user_id)
+    limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
+    period_hours = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
+    row = get_token_usage(user_id)
+    if row is None:
+        return limit, period_hours
+    period_start, tokens_used = row
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT EXTRACT(EPOCH FROM NOW() - %s) / 3600", (period_start,))
+            hours_passed = float(cur.fetchone()[0])
+    except Exception:
+        hours_passed = 0
+    if hours_passed >= period_hours:
+        return limit, period_hours
+    remaining = limit - tokens_used
+    if remaining < 0:
+        remaining = 0
+    return remaining, int(period_hours - hours_passed)
+
+def call_ai(messages, user_id):
+    if is_pro_user(user_id):
+        return call_openrouter(messages, "openai/gpt-4o-mini")
+    return call_groq(messages, "llama-3.1-8b-instant")
+
+
+def call_openrouter(messages, model=None):
+    or_key = os.getenv("OPENROUTER_API_KEY")
+    if not or_key:
+        return call_groq(messages, "llama-3.1-8b-instant")
+    model_name = model or "openai/gpt-4o-mini"
+    payload = {"model": model_name, "messages": messages, "temperature": 0.55, "top_p": 0.9}
+    body = json.dumps(payload).encode("utf-8")
+    import http.client
+    for attempt in range(3):
+        try:
+            conn = http.client.HTTPSConnection("openrouter.ai", timeout=60, context=SSL_CONTEXT)
+            conn.request("POST", "/api/v1/chat/completions", body=body, headers={
+                "Content-Type": "application/json", "Accept": "application/json",
+                "User-Agent": "ZeroxAI-Telegram-Bot/1.0",
+                "Authorization": f"Bearer {or_key}",
+                "HTTP-Referer": "https://zeroxaibot.fly.dev",
+                "X-Title": "ZeroxAI",
+            })
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8")
+            conn.close()
+            if resp.status == 429:
+                time.sleep(2 * (attempt + 1))
+                continue
+            if resp.status != 200:
+                continue
+            data = json.loads(raw)
+            return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except Exception as e:
+            time.sleep(1)
+    return call_groq(messages, "llama-3.1-8b-instant")
+
+def call_mistral(messages, model=None):
+    ms_key = os.getenv("MISTRAL_API_KEY")
+    if not ms_key:
+        ms_key = "tUKNfFhyw2T4PJm14WRjvy5dacmZ2lHZ"
+    model_name = model or "mistral-large-latest"
+    payload = {"model": model_name, "messages": messages, "temperature": 0.55, "top_p": 0.9}
+    body = json.dumps(payload).encode("utf-8")
+    import http.client
+    for attempt in range(3):
+        try:
+            conn = http.client.HTTPSConnection("api.mistral.ai", timeout=60, context=SSL_CONTEXT)
+            conn.request("POST", "/v1/chat/completions", body=body, headers={
+                "Content-Type": "application/json", "Accept": "application/json",
+                "Authorization": f"Bearer {ms_key}",
+            })
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8")
+            conn.close()
+            if resp.status == 429:
+                time.sleep(2 * (attempt + 1))
+                continue
+            if resp.status != 200:
+                continue
+            data = json.loads(raw)
+            return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except Exception as e:
+            time.sleep(1)
+    return call_groq(messages, "llama-3.1-8b-instant")
+
+def call_gemini(messages):
+    global _GEMINI_LAST_CALL
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return "API key not configured. Ask the admin to set GEMINI_API_KEY."
+    with _GEMINI_LOCK:
+        since_last = time.time() - _GEMINI_LAST_CALL
+        if since_last < 1.0:
+            time.sleep(1.0 - since_last)
+    models = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    system_prompt = ""
+    gemini_contents = []
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role == "system":
+            system_prompt = content
+        else:
+            gemini_role = "model" if role == "assistant" else "user"
+            gemini_contents.append({"role": gemini_role, "parts": [{"text": content}]})
+    if not gemini_contents:
+        return "Нет сообщений для обработки."
+    body = {"contents": gemini_contents}
+    if system_prompt:
+        body["system_instruction"] = {"parts": [{"text": system_prompt}]}
+    import http.client
+    for model in models:
+        for attempt in range(3):
+            try:
+                conn = http.client.HTTPSConnection("generativelanguage.googleapis.com", timeout=REQUEST_TIMEOUT, context=SSL_CONTEXT)
+                conn.request("POST", f"/v1beta/models/{model}:generateContent?key={api_key}",
+                             json.dumps(body).encode("utf-8"),
+                             {"Content-Type": "application/json", "User-Agent": "ZeroxAI-Telegram-Bot/1.0"})
+                resp = conn.getresponse()
+                raw = resp.read().decode("utf-8")
+                conn.close()
+                if resp.status == 429:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                if resp.status != 200:
+                    break
+                with _GEMINI_LOCK:
+                    _GEMINI_LAST_CALL = time.time()
+                data = json.loads(raw)
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    return "AI не дал ответ."
+                return candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+            except Exception as e:
+                time.sleep(1)
+    return "AI временно недоступен. Попробуйте позже."
+
+def save_data():
+    # Save chat data to DB
+    if not DB_POOL: return
+    try:
+        with db_cursor() as cur:
+            for chat_id, data in BOT_DATA.get("chats", {}).items():
+                cur.execute("INSERT INTO chat_data (chat_id, data) VALUES (%s, %s) ON CONFLICT (chat_id) DO UPDATE SET data = %s",
+                            (chat_id, json.dumps(data), json.dumps(data)))
+    except Exception as e:
+        print(f"Failed to save chat_data: {e}", file=sys.stderr)
+
+
+def save_histories_to_db():
+    """Save in-memory USER_HISTORIES to conversation_log on shutdown."""
+    if not DB_POOL or not USER_HISTORIES:
+        return
+    try:
+        with db_cursor() as cur:
+            for chat_id, history in USER_HISTORIES.items():
+                # history is alternating [user, assistant, user, assistant, ...]
+                for i in range(0, len(history) - 1, 2):
+                    user_msg = history[i].get("content", "")
+                    ai_resp = history[i + 1].get("content", "") if i + 1 < len(history) else ""
+                    if user_msg and ai_resp:
+                        cur.execute(
+                            "INSERT INTO conversation_log (user_id, chat_id, username, user_message, ai_response) VALUES (%s, %s, %s, %s, %s)",
+                            (chat_id, chat_id, str(chat_id), user_msg, ai_resp)
+                        )
+        print(f"Saved {sum(len(h) // 2 for h in USER_HISTORIES.values())} conversations from memory.", flush=True)
+    except Exception as e:
+        print(f"Failed to save histories: {e}", file=sys.stderr)
 
 SSL_CONTEXT = ssl.create_default_context()
-SSL_CONTEXT.check_hostname = False
-SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 
 LANG_EXT = {
@@ -310,7 +864,7 @@ LEVEL_NAMES = {
 }
 
 LEVEL_COMMANDS = {
-    1: ["/start", "/help", "/about", "/ping", "/id", "/myrole", "/team", "/lightlist", "/rules", "/commands", "/stats", "/report", "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme", "/free", "/bal", "/slot", "/shop", "/buy", "/inv", "/use"],
+    1: ["/start", "/help", "/about", "/ping", "/id", "/myrole", "/team", "/lightlist", "/rules", "/commands", "/stats", "/report", "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme", "/free", "/promo", "/bal", "/slot"],
     5: ["/warn", "/warns", "/unwarn"],
     6: ["/mute", "/unmute", "/kick", "/ban", "/unban"],
     8: ["/role add", "/role remove", "/role give", "/role take", "/role list", "/role info", "/setrules"],
@@ -318,14 +872,42 @@ LEVEL_COMMANDS = {
 }
 
 SYSTEM_PROMPT = """
-Ты ZeroxAI - умный, спокойный и полезный AI-ассистент.
+Ты ZeroxAI — Telegram-бот с расширенными возможностями.
 
-Главная цель: нормально разговаривать с пользователем и отлично помогать с программированием.
+Вот что ты умеешь (пользователь может вызвать любую команду в чате):
+- Чат-менеджмент: /mute, /unmute, /kick, /ban, /unban, /warn, /warns, /unwarn, /clean, /slowmode, /pin, /unpin, /welcome, /delete, /setrules, /rules
+- Казино: /coin, /dice, /roll, /slot, /allin, /bal, /balance, /top, /transfer, /give, /send
+- Магазин: /shop, /buy
+- Развлечения: /joke, /choose, /8ball, /hug, /slap, /quote, /meme
+- Инфо: /help, /about, /ping, /id, /myrole, /team, /stats, /commands, /report, /userinfo, /support
+- Pro-подписка: /mypro, /buypro, /tokens
+- RCON / сервер: /server, /startbot, /stopbot, /statbot
+- Промо: /promo
+- Тикеты: /ticket, /closeticket, /feedback
+- /hide — скрыть/показать функции в меню
+- /savehistory — сохранить историю чата
+- /free — инфо о бесплатном доступе
+- /announce, /say — админ-команды
+
+Также ты умный AI-ассистент: помогаешь с программированием, отвечаешь на вопросы, ведёшь диалог. Пользователи могут просто писать тебе сообщения без команд.
 
 Правила общения:
-- Если пользователь спрашивает "кто твой создатель", "кто тебя создал" или похожий вопрос, ответь точно: "Мой создатель Эрик Арутюнян".
-- Отвечай на языке пользователя. Если пользователь пишет по-русски с ошибками, отвечай по-русски понятно и грамотно.
-- Пиши просто, по делу и без лишней воды.
+- ОТВЕЧАЙ ТОЛЬКО НА ЯЗЫКЕ ПОЛЬЗОВАТЕЛЯ. Поддерживаются: русский, армянский (հայերեն), английский.
+- Если пользователь пишет по-русски — отвечай только по-русски.
+- Если пользователь пишет по-армянски — отвечай только по-армянски (հայերեն), без русского или английского текста.
+- Если пользователь пишет по-английски — отвечай только по-английски.
+- Если текст выглядит как русские слова, набранные в английской раскладке (например "Ghbdtn" → "Привет", "Rjcnz" → "Костана"), распознай это и отвечай по-русски.
+- Если пользователь спрашивает "кто ты такой", "кто ты" или "ты кто" — ответь представившись как ZeroxAI, например: "Я ZeroxAI — многофункциональный Telegram-бот с AI, казино, магазином и управлением чатом"
+- Если пользователь спрашивает "кто твой создатель", "кто тебя создал" — ответь строго одной фразой, без добавлений:
+  - на русском: "Мой создатель Эрик Арутюнян"
+  - на армянском: "Իմ ստեղծողը Էրիկ Հարությունյանն է"
+  - на английском: "My creator is Erik Harutyunyan"
+- Не путай эти два вопроса. "Кто ты" ≠ "кто твой создатель"
+- Если пользователь спрашивает "какая у тебя модель", "ты какой модели", "zeroxai pro или free" или похожий вопрос:
+  - если у пользователя Pro-подписка → ответь "ZeroxAI Pro"
+  - если Free → ответь "ZeroxAI Free"
+- Пиши коротко, без лишних фраз и воды. Ответил — замолчи.
+- Обращайся к пользователю по имени или @username, если знаешь. Это делает общение персонализированным.
 - Не высмеивай ошибки пользователя. Мягко понимай смысл и помогай.
 - Если запрос неясный, сначала сделай разумное предположение. Задавай вопрос только если без ответа нельзя продолжить.
 - Для обычных вопросов давай короткий полезный ответ.
@@ -339,9 +921,15 @@ SYSTEM_PROMPT = """
 - Для больших задач разбивай ответ на шаги.
 - Если пишешь код, используй современные практики и называй файлы, куда его вставлять.
 
-Стиль:
-- Ты дружелюбный профессиональный помощник ZeroxAI.
-- Не притворяйся, что обучаешь собственные веса модели. Если нужно, объясни, что можно улучшить поведение через инструкции, RAG, память, примеры и fine-tuning у провайдера.
+Стиль оформления (ОБЯЗАТЕЛЬНО):
+- Форматируй ответы красиво с помощью HTML-тегов: <b>жирный</b>, <i>курсив</i>, <code>код</code>
+- Используй эмодзи к месту: \U0001F44B, \u2705, \u26A0\uFE0F, \U0001F6A8, \U0001F4A1, \U0001F389, \U0001F525, \U0001F4B0, \U0001F3C6 и другие
+- Разбивай текст на абзацы и используй символы: \u2014 (тире), \u2022 (буллит), \u2192 (стрелка)
+- Главные мысли выделяй <b>жирным</b>
+- Пиши的结构: заголовок \u2192 детали \u2192 итог
+- Если пользователь пишет "привет" — ответь приветствием с эмодзи, обращаясь по имени или @username
+- Делай ответы информативными, но не перегружай
+- Используй имя или @username пользователя при обращении к нему. Ты знаешь, кто с тобой говорит.
 """.strip()
 
 
@@ -368,19 +956,26 @@ def get_api_keys():
 
 
 def load_data():
+    """Loads non-user, non-balance data from the database into memory."""
     global BOT_DATA
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            BOT_DATA = json.load(f)
-    except Exception:
-        BOT_DATA = {"chats": {}}
-    if "chats" not in BOT_DATA:
+    if not DB_POOL:
+        print("DB not available, skipping data load.", file=sys.stderr)
         BOT_DATA["chats"] = {}
+        return
 
-
-def save_data():
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(BOT_DATA, f, indent=2, ensure_ascii=False)
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT chat_id, data FROM chat_data")
+            rows = cur.fetchall()
+            # Reset in-memory data before loading
+            BOT_DATA["chats"] = {}
+            for chat_id, data in rows:
+                BOT_DATA["chats"][str(chat_id)] = data
+            print(f"Loaded data for {len(rows)} chats from DB.", flush=True)
+    except Exception as e:
+        print(f"Failed to load chat data from DB: {e}", file=sys.stderr)
+        # Ensure chats key exists even on failure
+        BOT_DATA["chats"] = {}
 
 
 def get_chat_data(chat_id):
@@ -428,13 +1023,34 @@ def parse_user_ref(message, args):
     return None
 
 
-def resolve_username(token, username):
-    username = username.lstrip("@")
+def resolve_username(token, username, chat_id=None):
+    username = username.lstrip("@").lower()
     try:
-        result = telegram_request(token, "getChat", {"chat_id": f"@{username}"})
-        return result.get("result", {}).get("id")
+        if DB_POOL:
+            with db_cursor() as cur:
+                cur.execute("SELECT user_id FROM users WHERE LOWER(username) = %s", (username,))
+                row = cur.fetchone()
+                if row:
+                    return row[0]
     except Exception:
-        return None
+        pass
+    # try to find user in current group chat
+    if chat_id:
+        try:
+            admins = telegram_request(token, "getChatAdministrators", {"chat_id": chat_id}).get("result", [])
+            for a in admins:
+                u = a.get("user", {})
+                if u.get("username") and u["username"].lower() == username:
+                    uid = u["id"]
+                    try:
+                        with db_cursor() as cur:
+                            cur.execute("UPDATE users SET username = %s WHERE user_id = %s AND username = ''", (username, uid))
+                    except Exception:
+                        pass
+                    return uid
+        except Exception:
+            pass
+    return None
 
 
 def get_user_display(user):
@@ -445,12 +1061,19 @@ def get_user_display(user):
     return f"{name} (@{uname})" if uname else name
 
 
-def format_duration(minutes):
+def format_minutes_duration(minutes):
     if minutes < 60:
         return f"{minutes} мин"
     hours = minutes // 60
     mins = minutes % 60
     return f"{hours} ч {mins} мин" if mins else f"{hours} ч"
+
+
+def _insecure_ctx():
+    return SSL_CONTEXT
+
+
+SSL_CTX = SSL_CONTEXT
 
 
 def telegram_request(token, method, payload=None, _direct=False):
@@ -466,7 +1089,7 @@ def telegram_request(token, method, payload=None, _direct=False):
         try:
             req = urllib.request.Request(url, data=data, headers=headers,
                                          method="POST" if payload is not None else "GET")
-            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=SSL_CTX) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except (ssl.SSLEOFError, ssl.SSLError, urllib.error.URLError) as e:
             if attempt < 2:
@@ -494,7 +1117,7 @@ def telegram_upload(token, method, fields, file_field, file_bytes, filename, con
     for attempt in range(3):
         try:
             req = urllib.request.Request(url, data=bytes(body), headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=SSL_CTX) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except (ssl.SSLEOFError, ssl.SSLError, urllib.error.URLError) as e:
             if attempt < 2:
@@ -503,40 +1126,21 @@ def telegram_upload(token, method, fields, file_field, file_bytes, filename, con
             raise
 
 
-def get_updates(token, offset):
-    query = urllib.parse.urlencode({"timeout": 10, "offset": offset})
-    url = f"{TELEGRAM_BASE_URL}/bot{token}/getUpdates?{query}"
-    for attempt in range(5):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "ZeroxAI-Telegram-Bot/1.0"})
-            with urllib.request.urlopen(req, timeout=25) as resp:
-                return json.loads(resp.read().decode("utf-8")).get("result", [])
-        except urllib.error.HTTPError as e:
-            if e.code == 409 and attempt < 4:
-                time.sleep(2)
-                continue
-            raise
-        except (ssl.SSLEOFError, ssl.SSLError, urllib.error.URLError) as e:
-            if attempt < 4:
-                time.sleep(0.5 * (attempt + 1))
-                continue
-            if TELEGRAM_BASE_URL != "https://api.telegram.org":
-                print(f"get_updates SSL error, falling back to direct API: {e}")
-                url = url.replace(TELEGRAM_BASE_URL, "https://api.telegram.org")
-                continue
-            raise
-
-
-def send_message(token, chat_id, text):
+def send_message(token, chat_id, text, reply_markup=None, parse_mode=None):
     chunks = split_message(text)
-    for chunk in chunks:
-        telegram_request(token, "sendMessage", {
+    for i, chunk in enumerate(chunks):
+        payload = {
             "chat_id": chat_id, "text": chunk,
             "disable_web_page_preview": True,
-        })
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        if reply_markup and i == 0:
+            payload["reply_markup"] = reply_markup
+        telegram_request(token, "sendMessage", payload)
 
 
-def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None):
+def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None, reply_markup=None):
     chunks = split_message(text)
     first = True
     for chunk in chunks:
@@ -546,22 +1150,46 @@ def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None):
         if first and reply_to_msg_id:
             payload["reply_to_message_id"] = reply_to_msg_id
             first = False
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         telegram_request(token, "sendMessage", payload)
 
 
-def edit_message(token, chat_id, message_id, text):
-    telegram_request(token, "editMessageText", {
+def _menu_kb():
+    return {"keyboard": [[{"text": "\u2B50 Подписка"}, {"text": "\U0001F916 Токены"}]], "resize_keyboard": True}
+
+
+def edit_message(token, chat_id, message_id, text, parse_mode=None):
+    payload = {
         "chat_id": chat_id, "message_id": message_id, "text": text,
         "disable_web_page_preview": True,
-    })
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    telegram_request(token, "editMessageText", payload)
 
 
-def send_thinking_and_answer(token, chat_id, answer):
-    frames = ["\U0001F914 Думает...", "\U0001F914 Думает..", "\U0001F914 Думает."]
+def detect_lang(text):
+    armenian = sum(1 for c in text if '\u0530' <= c <= '\u058F' or '\uFB00' <= c <= '\uFB17')
+    russian = sum(1 for c in text if '\u0400' <= c <= '\u04FF')
+    if armenian > russian and armenian > 0:
+        return "arm"
+    if russian > 0:
+        return "ru"
+    return "en"
+
+
+def send_thinking_and_answer(token, chat_id, answer, lang="ru"):
+    frames_map = {
+        "ru": ["\U0001F914 Думает...", "\U0001F914 Думает..", "\U0001F914 Думает."],
+        "en": ["\U0001F914 Thinking...", "\U0001F914 Thinking..", "\U0001F914 Thinking."],
+        "arm": ["\U0001F914 Մտածում է...", "\U0001F914 Մտածում է..", "\U0001F914 Մտածում է."],
+    }
+    frames = frames_map.get(lang, frames_map["ru"])
     result = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": frames[0]})
     msg_id = result.get("result", {}).get("message_id")
     if not msg_id:
-        send_message(token, chat_id, answer)
+        send_message(token, chat_id, answer, parse_mode="HTML")
         return None
     import time as time_module
     for frame in frames[1:]:
@@ -573,12 +1201,12 @@ def send_thinking_and_answer(token, chat_id, answer):
     time_module.sleep(0.3)
     chunks = split_message(answer)
     try:
-        edit_message(token, chat_id, msg_id, chunks[0])
+        edit_message(token, chat_id, msg_id, chunks[0], parse_mode="HTML")
     except Exception:
-        send_message(token, chat_id, answer)
+        send_message(token, chat_id, answer, parse_mode="HTML")
         return None
     for chunk in chunks[1:]:
-        send_message(token, chat_id, chunk)
+        send_message(token, chat_id, chunk, parse_mode="HTML")
     return msg_id
 
 
@@ -587,9 +1215,15 @@ def split_message(text):
     return [text[index:index + MAX_TELEGRAM_MESSAGE] for index in range(0, len(text), MAX_TELEGRAM_MESSAGE)]
 
 
-def build_messages(chat_id, user_text):
+def build_messages(chat_id, user_text, username=None, first_name=None, user_id=None):
     history = USER_HISTORIES.get(chat_id, [])[-MAX_HISTORY_MESSAGES:]
-    return [{"role": "system", "content": SYSTEM_PROMPT}, *history, {"role": "user", "content": user_text}]
+    user_ref = first_name or username or "Пользователь"
+    context = f"С тобой говорит {user_ref}."
+    if username:
+        context += f" Его юзернейм: @{username}."
+    if user_id and is_pro_user(user_id):
+        context += " У пользователя Pro-подписка."
+    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context}, *history, {"role": "user", "content": user_text}]
 
 
 def remember(chat_id, user_text, assistant_text):
@@ -599,13 +1233,242 @@ def remember(chat_id, user_text, assistant_text):
     USER_HISTORIES[chat_id] = history[-MAX_HISTORY_MESSAGES:]
 
 
-def call_groq(messages):
+def log_conversation(user_id, chat_id, username, user_message, ai_response):
+    if not DB_POOL:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "INSERT INTO conversation_log (user_id, chat_id, username, user_message, ai_response) VALUES (%s, %s, %s, %s, %s)",
+                (user_id, chat_id, username, user_message, ai_response)
+            )
+    except Exception as e:
+        print(f"Failed to log conversation: {e}", file=sys.stderr)
+
+
+OWNER_ID = 6734685656
+
+
+def forward_to_owner(token, user_id, username, user_message, ai_response, chat_id):
+    if BOT_DATA.get("hidden", {}).get("logs"):
+        return
+    from datetime import datetime
+    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    mention = f"@{username}" if username else f"id{user_id}"
+    text = (
+        f"\U0001F4AC Новое сообщение\n"
+        f"От: {mention}\n"
+        f"Чат: {chat_id}\n"
+        f"Время: {now}\n\n"
+        f"<b>Пользователь:</b>\n{user_message[:500]}\n\n"
+        f"<b>AI:</b>\n{ai_response[:1500]}"
+    )
+    try:
+        reply_message(token, OWNER_ID, text, None, parse_mode="HTML")
+    except Exception as e:
+        print(f"Failed to forward to owner: {e}", file=sys.stderr)
+
+
+def send_recent_conversations(token):
+    if not DB_POOL:
+        return
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT user_id, username, user_message, ai_response, created_at FROM conversation_log WHERE created_at >= NOW() - INTERVAL '5 hours' ORDER BY created_at ASC"
+            )
+            rows = cur.fetchall()
+    except Exception as e:
+        print(f"Failed to query recent conversations: {e}", file=sys.stderr)
+        return
+
+    if not rows:
+        return
+
+    from datetime import datetime
+    BOT_DATA["conv_logs"] = rows
+    BOT_DATA["conv_page"] = 0
+    _send_conv_page(token, 0)
+
+
+def _send_conv_page(token, page, msg_id=None):
+    rows = BOT_DATA.get("conv_logs", [])
+    if not rows:
+        return
+    total = len(rows)
+    per_page = 5
+    total_pages = (total + per_page - 1) // per_page
+    start = page * per_page
+    end = min(start + per_page, total)
+    lines = [f"\U0001F4CB Последние переписки ({total} шт.) — стр. {page + 1}/{total_pages}\n"]
+    for i in range(start, end):
+        user_id, username, user_msg, ai_resp, created_at = rows[i]
+        mention = f"@{username}" if username else f"id{user_id}"
+        ts = created_at.strftime("%d.%m.%Y %H:%M") if hasattr(created_at, "strftime") else str(created_at)[:16]
+        lines.append(
+            f"#{i + 1} {mention} [{ts}]\n"
+            f"\U0001F464 {user_msg[:300]}\n"
+            f"\U0001F916 {ai_resp[:300]}"
+        )
+    text = "\n\n".join(lines)
+    kb = {"inline_keyboard": []}
+    nav = []
+    if page > 0:
+        nav.append({"text": "\u25C0 Назад", "callback_data": f"convpage_{page - 1}"})
+    if page + 1 < total_pages:
+        nav.append({"text": "Вперёд \u25B6", "callback_data": f"convpage_{page + 1}"})
+    if nav:
+        kb["inline_keyboard"].append(nav)
+    try:
+        if msg_id:
+            telegram_request(token, "editMessageText", {
+                "chat_id": OWNER_ID, "message_id": msg_id, "text": text,
+                "reply_markup": kb if nav else None,
+            })
+        else:
+            reply_message(token, OWNER_ID, text, None, reply_markup=kb if nav else None)
+    except Exception as e:
+        print(f"Failed to send conv page: {e}", file=sys.stderr)
+
+
+def auto_answer_tickets(token):
+    while True:
+        try:
+            time.sleep(60)
+            if not DB_POOL:
+                continue
+            with db_cursor() as cur:
+                cur.execute(
+                    "SELECT id, user_id, chat_id, username, question FROM tickets WHERE status = 'open' AND created_at <= NOW() - INTERVAL '%s hours'",
+                    (AUTO_ANSWER_HOURS,)
+                )
+                rows = cur.fetchall()
+            for ticket_id, user_id, chat_id, username, question in rows:
+                try:
+                    prompt = f"Пользователь обратился в техподдержку с вопросом: {question}\n\nДай вежливый и полезный ответ от имени техподдержки бота ZeroxAI."
+                    messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
+                    answer = call_ai(messages, user_id)
+                    with db_cursor() as cur2:
+                        cur2.execute(
+                            "UPDATE tickets SET status = 'auto_answered', answer_text = %s, answered_at = NOW() WHERE id = %s AND status = 'open'",
+                            (answer, ticket_id)
+                        )
+                    try:
+                        telegram_request(token, "sendMessage", {
+                            "chat_id": chat_id,
+                            "text": f"\U0001F916 Автоответ на ваш запрос №{ticket_id} (ТП не ответила за {AUTO_ANSWER_HOURS}ч):\n\n{answer}",
+                            "parse_mode": "HTML",
+                        })
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"Failed to auto-answer ticket {ticket_id}: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"Auto-answer thread error: {e}", file=sys.stderr)
+        mention = f"@{username}" if username else f"id{user_id}"
+        ts = created_at.strftime("%d.%m.%Y %H:%M") if hasattr(created_at, "strftime") else str(created_at)[:16]
+        entry = (
+            f"#{i} {mention} [{ts}]\n"
+            f"\U0001F464 {user_msg[:300]}\n"
+            f"\U0001F916 {ai_resp[:300]}\n\n"
+        )
+        if len(current) + len(entry) > 3800:
+            parts.append(current)
+            current = entry
+        else:
+            current += entry
+    if current.strip():
+        parts.append(current)
+
+    for part in parts:
+        try:
+            reply_message(token, OWNER_ID, part, None)
+        except Exception as e:
+            print(f"Failed to send recent conversations: {e}", file=sys.stderr)
+
+
+_SCANNING_IMAGES = False
+
+def _scan_chats_for_images(token):
+    global _SCANNING_IMAGES
+    if _SCANNING_IMAGES:
+        send_message(token, OWNER_ID, "\u26A0\uFE0F Сканирование уже запущено.")
+        return
+    _SCANNING_IMAGES = True
+    import threading as _scan_th
+
+    def _scan():
+        import time as _st
+        chats = set()
+        try:
+            with db_cursor() as cur:
+                cur.execute("SELECT DISTINCT user_id FROM users")
+                for row in cur.fetchall():
+                    cid = row[0]
+                    if cid > 0:
+                        chats.add(cid)
+        except:
+            pass
+        chats.discard(OWNER_ID)
+        found = 0
+        scanned = 0
+        chat_list = sorted(chats, reverse=True)[:50]
+        total = len(chat_list)
+        send_message(token, OWNER_ID, f"\U0001F50D Найдено {total} чатов. Начинаю сканирование...")
+        for idx, cid in enumerate(chat_list):
+            remaining = total - idx
+            if not _SCANNING_IMAGES:
+                break
+            try:
+                info = telegram_request(token, "getChat", {"chat_id": cid})
+                if not info.get("ok"):
+                    continue
+                cname = info.get("result", {}).get("title") or info.get("result", {}).get("username") or str(cid)
+                send_message(token, OWNER_ID, f"\U0001F4E6 [{remaining}/{total}] Сканирую {cname} (ID: {cid})...")
+                # Phase 1: find upper bound via exponential search
+                upper = 1
+                while _SCANNING_IMAGES and upper <= 50000:
+                    try:
+                        r = telegram_request(token, "forwardMessage", {"chat_id": OWNER_ID, "from_chat_id": cid, "message_id": upper})
+                        if r.get("ok"):
+                            found += 1
+                            scanned += 1
+                            upper *= 2
+                        else:
+                            break
+                    except:
+                        break
+                    _st.sleep(0.02)
+                # Phase 2: scan range [1, upper-1] with step 10
+                limit = min(upper, 10000)
+                for mid in range(1, limit, 10):
+                    if not _SCANNING_IMAGES:
+                        break
+                    try:
+                        r = telegram_request(token, "forwardMessage", {"chat_id": OWNER_ID, "from_chat_id": cid, "message_id": mid})
+                        if r.get("ok"):
+                            found += 1
+                        scanned += 1
+                    except:
+                        pass
+                    _st.sleep(0.02)
+            except:
+                pass
+            _st.sleep(1)
+        _SCANNING_IMAGES = False
+        send_message(token, OWNER_ID, f"\u2705 Сканирование завершено. Найдено: {found}. Отсканировано ID: {scanned}.")
+
+    _scan_th.Thread(target=_scan, daemon=True).start()
+
+
+def call_groq(messages, model=None):
     import http.client
     global ACTIVE_KEY_INDEX, TOKEN_USAGE
     api_keys = get_api_keys()
     if not api_keys:
         return "Ошибка: добавьте ZEROXAI_API_KEYS в переменные окружения."
-    payload = {"model": MODEL, "messages": messages, "temperature": 0.55, "top_p": 0.9}
+    model_name = model or MODEL
+    payload = {"model": model_name, "messages": messages, "temperature": 0.55, "top_p": 0.9}
     body = json.dumps(payload).encode("utf-8")
     last_error = "Все API-ключи не сработали."
     for attempt in range(len(api_keys)):
@@ -641,6 +1504,33 @@ def call_groq(messages):
                 conn.close()
         time.sleep(0.2)
     ACTIVE_KEY_INDEX = (ACTIVE_KEY_INDEX + 1) % len(api_keys)
+    # fallback to OpenRouter if available
+    or_key = os.getenv("OPENROUTER_API_KEY")
+    if or_key:
+        try:
+            payload["model"] = "google/gemini-2.0-flash-001"
+            body2 = json.dumps(payload).encode("utf-8")
+            conn = http.client.HTTPSConnection("openrouter.ai", timeout=REQUEST_TIMEOUT, context=SSL_CONTEXT)
+            conn.request("POST", "/api/v1/chat/completions", body=body2, headers={
+                "Content-Type": "application/json", "Accept": "application/json",
+                "User-Agent": "ZeroxAI-Telegram-Bot/1.0",
+                "Authorization": f"Bearer {or_key}",
+                "HTTP-Referer": "https://zeroxaibot.fly.dev",
+                "X-Title": "ZeroxAI",
+            })
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8")
+            conn.close()
+            if resp.status == 200:
+                data = json.loads(raw)
+                return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except Exception as e:
+            last_error = f"OpenRouter fallback: {e}"
+    # fallback to Mistral
+    try:
+        return call_mistral(messages, "mistral-large-latest")
+    except Exception as e:
+        last_error = f"Mistral fallback: {e}"
     return f"Не удалось получить ответ: {last_error}"
 
 
@@ -734,9 +1624,70 @@ def handle_callback_query(token, callback_query):
     msg = callback_query.get("message") or {}
     chat_id = msg.get("chat", {}).get("id")
     msg_id = msg.get("message_id")
+    from_user = callback_query.get("from", {})
+    user_id = from_user.get("id")
     if not cq_id or not chat_id or not msg_id:
         return
     telegram_request(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+
+    if data == "menu_pro":
+        if is_pro_user(user_id):
+            text = "\u2B50\uFE0F У вас активна Pro-подписка! Осталось {} дн.".format(pro_days_left(user_id)) + "\nИспользуется ZeroxAI Pro."
+        else:
+            text = "\u274C У вас бесплатная версия ZeroxAI.\nКупите Pro: /buypro"
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id, "text": text,
+            "reply_markup": {
+                "inline_keyboard": [[
+                    {"text": "\u25C0 Назад", "callback_data": "menu_back"},
+                ]]
+            },
+        })
+        return
+
+    if data == "menu_tokens":
+        pro = is_pro_user(user_id)
+        limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
+        period = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
+        remaining, hours_left = get_token_remaining(user_id)
+        used = limit - remaining
+        bar_len = 10
+        filled = int(bar_len * used / limit) if limit else 0
+        bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
+        tier = "Pro" if pro else "Free"
+        text = f"\U0001F916 Токены ({tier}):\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\nВосстановление: {hours_left}h / {period}h"
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id, "text": text,
+            "reply_markup": {
+                "inline_keyboard": [[
+                    {"text": "\u25C0 Назад", "callback_data": "menu_back"},
+                ]]
+            },
+        })
+        return
+
+    if data == "menu_back":
+        text = "\U0001F916 ZeroxAI Bot — многофункциональный AI-ассистент и чат-менеджер.\nКоманды: /commands\nПросто напиши вопрос или задачу — я отвечу как AI."
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id, "text": text,
+            "reply_markup": {
+                "inline_keyboard": [[
+                    {"text": "\u2B50 Подписка", "callback_data": "menu_pro"},
+                    {"text": "\U0001F916 Токены", "callback_data": "menu_tokens"},
+                ]]
+            },
+        })
+        return
+
+    if data.startswith("convpage_"):
+        try:
+            page = int(data.split("_", 1)[1])
+        except (ValueError, IndexError):
+            return
+        _send_conv_page(token, page, msg_id=msg_id)
+        return
+
+    # legacy code callback handling
     key = (chat_id, msg_id)
     blocks = CODE_STORE.pop(key, None)
     if not blocks:
@@ -768,14 +1719,15 @@ KNOWN_COMMANDS = {
     "/mute", "/unmute", "/kick", "/ban", "/unban",
     "/role", "/setrules",
     "/ticket", "/closeticket", "/feedback", "/announce", "/userinfo", "/support",
-    "/clean", "/pin", "/unpin", "/slowmode", "/say", "/welcome", "/delete", "/banlist",
+    "/clean", "/pin", "/unpin", "/slowmode", "/say", "/welcome", "/delete", "/banlist", "/shop",
     "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme",
-    "/free", "/bal", "/balance", "/slot", "/allin",
-    "/shop", "/buy", "/inv", "/inventory", "/use",
+    "/free", "/promo", "/bal", "/balance", "/slot", "/allin",
     "/transfer", "/give", "/send",
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
-    "/server", "/addsticker",
+    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
+    "/hide", "/savehistory", "/answer",
+    "/giveall", "/addcoin", "/testshop", "/logs",
 }
 
 def should_respond(message):
@@ -807,6 +1759,7 @@ def should_respond(message):
     reply_to = message.get("reply_to_message")
     if reply_to and reply_to.get("from", {}).get("id") == BOT_ID:
         return True
+
     return False
 
 
@@ -828,8 +1781,19 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
 
     is_group = chat.get("type") != "private"
 
-    def reply(msg, pm=None):
-        reply_message(token, chat_id, msg, message.get("message_id"), pm)
+    def reply(msg, pm=None, **extra):
+        chunks = split_message(msg)
+        first = True
+        for chunk in chunks:
+            payload = {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}
+            if pm:
+                payload["parse_mode"] = pm
+            if extra:
+                payload.update(extra)
+            if first and message.get("message_id"):
+                payload["reply_to_message_id"] = message["message_id"]
+                first = False
+            telegram_request(token, "sendMessage", payload)
 
     def lvl():
         return get_user_level(chat_id, user_id)
@@ -840,6 +1804,26 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             return False
         return True
 
+    # --- Public /hide (list available features) ---
+    if cmd == "/hide" and len(args) < 2:
+        reply(
+            "\U0001F512 Панель управления\n\n"
+            "\u2B07 Доступные функции:\n"
+            "  \u2022 casino (\U0001F3B0) — казино\n"
+            "  \u2022 shop (\U0001F6CD) — магазин\n"
+            "  \u2022 ai (\U0001F916) — AI ответы\n"
+            "  \u2022 rcon (\u2694) — RCON команды\n"
+            "  \u2022 promo (\U0001F4F0) — /promo\n"
+            "  \u2022 info (\u2139) — /info\n"
+            "  \u2022 server (\U0001F5A5) — /server\n"
+            "  \u2022 stats (\U0001F4CA) — /stats\n"
+            "  \u2022 help (\u2753) — /help\n"
+            "  \u2022 commands (\U0001F4CB) — /commands\n"
+            "  \u2022 about (\u2139\uFE0F) — /about\n\n"
+            "\u26A0\uFE0F Управление: /hide <функция> <True/False>"
+        )
+        return True
+
     try:
         # --- Owner commands (id 6734685656) ---
         if user_id == 6734685656:
@@ -848,20 +1832,28 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 if not target_ref:
                     reply("Ответьте на сообщение или укажите @username/ID.")
                     return True
+                def _parse_coin_amount(s):
+                    s = s.replace(",", "").upper()
+                    mult = {"K": 10**3, "M": 10**6, "B": 10**9, "T": 10**12, "Q": 10**15, "Qn": 10**18, "Sx": 10**21, "Sp": 10**24}
+                    if s[-2:] in ("Qn", "Sx", "Sp"):
+                        return int(float(s[:-2]) * mult[s[-2:]])
+                    if s[-1] in mult:
+                        return int(float(s[:-1]) * mult[s[-1]])
+                    return int(s)
                 try:
-                    amount = int([a for a in args if a.lstrip("-").isdigit()][-1])
+                    amount = _parse_coin_amount([a for a in args if any(c.isdigit() for c in a)][-1])
                 except (IndexError, ValueError):
-                    reply("Укажите сумму. Пример: /addcoin @username 1000")
+                    reply("Укажите сумму. Пример: /addcoin @username 14M или /addcoin @username 1000")
                     return True
                 if amount <= 0:
                     reply("Сумма должна быть положительной.")
                     return True
-                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref)
+                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref, chat_id)
                 if not tid:
-                    reply("Пользователь не найден.")
+                    reply("Пользователь не найден. Попросите его написать боту любое сообщение, затем повторите.")
                     return True
                 add_balance(tid, amount)
-                reply(f"\U0001F4B0 Добавлено {amount} монет. Баланс получателя: {get_balance(tid)}")
+                reply(f"\U0001F4B0 Добавлено {fmt_coin(amount)} монет. Баланс получателя: {fmt_coin(get_balance(tid))}")
                 return True
 
             if cmd in ("/removecoin", "/removemoney"):
@@ -877,12 +1869,75 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 if amount <= 0:
                     reply("Сумма должна быть положительной.")
                     return True
-                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref)
+                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref, chat_id)
                 if not tid:
-                    reply("Пользователь не найден.")
+                    reply("Пользователь не найден. Попросите его написать боту любое сообщение, затем повторите.")
                     return True
                 add_balance(tid, -amount)
-                reply(f"\U0001F4B0 Списано {amount} монет. Баланс получателя: {get_balance(tid)}")
+                reply(f"\U0001F4B0 Списано {fmt_coin(amount)} монет. Баланс получателя: {fmt_coin(get_balance(tid))}")
+                return True
+
+            if cmd == "/giveall":
+                try:
+                    amount = int(args[0]) if args else 1000000
+                except ValueError:
+                    reply("Сумма должна быть числом.")
+                    return True
+                if amount <= 0:
+                    reply("Сумма должна быть положительной.")
+                    return True
+                with db_cursor() as cur:
+                    cur.execute("SELECT DISTINCT user_id FROM users")
+                    user_ids = [row[0] for row in cur.fetchall()]
+                if not user_ids:
+                    reply("Нет пользователей в БД.")
+                    return True
+                count = 0
+                for uid in user_ids:
+                    try:
+                        add_balance(uid, amount)
+                        count += 1
+                    except Exception:
+                        pass
+                reply(f"\U0001F4B0 Выдано {fmt_coin(amount)} каждому из {count} пользователей.")
+                return True
+
+            if cmd == "/savehistory":
+                count = sum(len(h) // 2 for h in USER_HISTORIES.values())
+                save_histories_to_db()
+                reply(f"\U0001F4BE Сохранено {count} диалогов из памяти в БД.")
+                return True
+
+            if cmd == "/hide":
+                if len(args) < 2:
+                    reply(
+                        "\U0001F512 Панель управления (владелец)\n\n"
+                        "\u2B07 Доступные функции:\n"
+                        "  \u2022 casino (\U0001F3B0) — казино\n"
+                        "  \u2022 shop (\U0001F6CD) — магазин\n"
+                        "  \u2022 ai (\U0001F916) — AI ответы\n"
+                        "  \u2022 rcon (\u2694) — RCON команды\n"
+                        "  \u2022 promo (\U0001F4F0) — /promo\n"
+                        "  \u2022 info (\u2139) — /info\n"
+                        "  \u2022 server (\U0001F5A5) — /server\n"
+                        "  \u2022 stats (\U0001F4CA) — /stats\n"
+                        "  \u2022 help (\u2753) — /help\n"
+                        "  \u2022 commands (\U0001F4CB) — /commands\n"
+                        "  \u2022 about (\u2139\uFE0F) — /about\n"
+                        "  \u2022 logs (\U0001F4DD) — логи переписки\n\n"
+                        "\u26A0\uFE0F Управление: /hide <функция> <True/False>"
+                    )
+                    return True
+                feature = args[0].lower()
+                value = args[1].lower()
+                if value not in ("true", "false", "1", "0", "yes", "no"):
+                    reply("\u274C Использование: /hide <функция> <True/False>")
+                    return True
+                bool_val = value in ("true", "1", "yes")
+                BOT_DATA.setdefault("hidden", {})[feature] = bool_val
+                save_data()
+                status = "\u2705 скрыто" if bool_val else "\u274C видно"
+                reply(f"\U0001F512 '{feature}' {status}.")
                 return True
 
             if cmd == "/stopcasino":
@@ -909,63 +1964,311 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 reply("\U0001F916 Бот запущен.")
                 return True
 
+            if cmd == "/grantpro":
+                target_ref = parse_user_ref(message, args)
+                if not target_ref and args:
+                    target_ref = args[0]
+                if target_ref:
+                    tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref, chat_id)
+                    if not tid:
+                        reply("Пользователь не найден. Попросите его написать боту любое сообщение, затем повторите.")
+                        return True
+                    add_pro_user(tid)
+                    reply(f"\u2B50\uFE0F Pro подписка выдана пользователю ID {tid} на 30 дней!")
+                else:
+                    add_pro_user(user_id)
+                    reply("\u2B50\uFE0F Вам выдана Pro подписка на 30 дней!")
+                return True
+
+            if cmd == "/luckset":
+                target_ref = parse_user_ref(message, args)
+                if not target_ref:
+                    reply("Ответьте на сообщение или укажите @username/ID.")
+                    return True
+                try:
+                    luck_val = int([a for a in args if a.lstrip("-").isdigit()][-1])
+                except (IndexError, ValueError):
+                    reply("Укажите значение удачи (0-100). Пример: /luckset @username 50")
+                    return True
+                luck_val = max(0, min(100, luck_val))
+                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref, chat_id)
+                if not tid:
+                    reply("Пользователь не найден. Попросите его написать боту любое сообщение, затем повторите.")
+                    return True
+                set_luck(tid, luck_val)
+                reply(f"\U0001F340 Удача для ID {tid} установлена на {luck_val}%")
+                return True
+
+            if cmd == "/resettokens":
+                try:
+                    with db_cursor() as cur:
+                        cur.execute("DELETE FROM user_tokens")
+                    reply("\U0001F504 Токены сброшены для всех пользователей!")
+                except Exception as e:
+                    reply(f"\u274C Ошибка: {e}")
+                return True
+
             if cmd == "/statbot":
-                total_users = len(BOT_DATA.get("balances", {}))
-                total_coins = sum(BOT_DATA.get("balances", {}).values())
+                total_users = 0
+                total_coins = 0
+                try:
+                    with db_cursor() as cur:
+                        cur.execute("SELECT COUNT(*), SUM(balance) FROM users WHERE balance > 0")
+                        total_users, total_coins = cur.fetchone()
+                except Exception as e:
+                    print(f"Failed to get bot stats from DB: {e}", file=sys.stderr)
+
                 chats = set()
                 for k in USER_HISTORIES:
                     chats.add(k)
                 reply(
                     f"\U0001F4CA Статистика:\n"
-                    f"Пользователей с балансом: {total_users}\n"
-                    f"Всего монет в обращении: {total_coins}\n"
+                    f"Пользователей с балансом: {total_users or 0}\n"
+                    f"Всего монет в обращении: {fmt_coin(total_coins or 0)}\n"
                     f"Активных чатов: {len(chats)}\n"
-                    f"Казино: {'\u2705' if not BOT_DATA.get('casino_disabled') else '\u26D4'}"
+                    f"Казино: {'✅' if not BOT_DATA.get('casino_disabled') else '⛔'}"
                 )
                 return True
 
-            if cmd == "/tokens":
-                used = TOKEN_USAGE['total']
-                limit = TOKEN_LIMIT
+            if cmd == "/top":
+                try:
+                    with db_cursor() as cur:
+                        cur.execute("SELECT user_id, balance FROM users WHERE balance > 0 ORDER BY balance DESC LIMIT 3")
+                        rows = cur.fetchall()
+                except Exception as e:
+                    reply(f"Ошибка: {e}")
+                    return True
+                if not rows and not MESSAGE_COUNTS:
+                    reply("Пока нет данных для топа.")
+                    return True
+                ranked_messages = []
+                for uid, count in MESSAGE_COUNTS.items():
+                    if count > 0:
+                        ranked_messages.append((count, uid))
+                ranked_messages.sort(reverse=True)
+                message_rows = ranked_messages[:3]
+
+                lines = ["🏆 <b>ТОП ИГРОКОВ ПО МОНЕТАМ</b>"]
+                medals = ["🥇", "🥈", "🥉"]
+                for i, (uid, bal) in enumerate(rows):
+                    name = f"ID {uid}"
+                    try:
+                        info = telegram_request(token, "getChat", {"chat_id": uid})
+                        if info and info.get("ok"):
+                            u = info.get("result", {})
+                            name = u.get("username") and f"@{u['username']}" or u.get("first_name", name)
+                    except Exception:
+                        pass
+                    lines.append(f"{medals[i]} {name} — {fmt_coin(bal)} 🪙 Coin")
+
+                lines.append("")
+                lines.append("💬 <b>ТОП ПО СООБЩЕНИЯМ</b>")
+                for i, (count, uid) in enumerate(message_rows):
+                    name = f"ID {uid}"
+                    try:
+                        info = telegram_request(token, "getChat", {"chat_id": uid})
+                        if info and info.get("ok"):
+                            u = info.get("result", {})
+                            name = u.get("username") and f"@{u['username']}" or u.get("first_name", name)
+                    except Exception:
+                        pass
+                    suffix = "сообщение" if count % 10 == 1 and count % 100 != 11 else "сообщений"
+                    lines.append(f"{medals[i]} {name} — {count} {suffix} 💬")
+
+                reply("\n".join(lines), "HTML")
+                return True
+
+            if cmd == "/testshop":
+                if args and args[0] == "off":
+                    _testshop_running = False
+                    reply("\u2705 Тест магазина остановлен.")
+                    return True
+                if _testshop_running:
+                    reply("\u26A0\uFE0F Тест уже запущен. /testshop off — остановить.")
+                    return True
+                _testshop_running = True
+                reply("\U0001F3B0 Запуск теста магазина... /testshop off — остановить.")
+
+                def _testshop_loop():
+                    items = list(SHOP_ITEMS.keys())
+                    while _testshop_running:
+                        for item_id in items:
+                            if not _testshop_running:
+                                return
+                            item = SHOP_ITEMS[item_id]
+                            add_balance(user_id, item["price"])
+                            with _user_item_lock(user_id):
+                                user_items = get_user_items(user_id)
+                                if item["type"] == "timed":
+                                    if has_active_item(user_id, item_id):
+                                        user_items[item_id]["expires_at"] += item["duration_min"] * 60
+                                    else:
+                                        user_items[item_id] = {"purchased_at": time.time(), "expires_at": time.time() + item["duration_min"] * 60}
+                                else:
+                                    if item_id in user_items:
+                                        user_items[item_id] = {"qty": user_items[item_id].get("qty", 1) + 1}
+                                    else:
+                                        user_items[item_id] = {"qty": 1}
+                                set_user_items(user_id, user_items)
+                            send_message(token, chat_id, f"\u2705 Куплено {item['name']}")
+                            import time as _ts
+                            _ts.sleep(0.5)
+                        # play slot a few times
+                        for _ in range(3):
+                            if not _testshop_running:
+                                return
+                            bal = get_balance(user_id)
+                            bet = min(1000000, bal // 2)
+                            if bet < 50:
+                                add_balance(user_id, 10000000)
+                                bet = 1000000
+                            # simulate slot logic inline
+                            _SLOT_SYMS = ["\u25AC", "\U0001F347", "\U0001F34B", "7\uFE0F\u20E3"]
+                            with _user_item_lock(user_id):
+                                u_items = get_user_items(user_id)
+                                wp = u_items.get("jackpot_potion", {}).get("qty", 0) > 0
+                                wp2 = u_items.get("luck_potion", {}).get("qty", 0) > 0
+                                mp = has_active_item(user_id, "multiplier")
+                                mult = 2 if mp else 1
+                                if wp:
+                                    u_items["jackpot_potion"]["qty"] -= 1
+                                    if u_items["jackpot_potion"]["qty"] <= 0:
+                                        del u_items["jackpot_potion"]
+                                    set_user_items(user_id, u_items)
+                                    s1 = s2 = s3 = _random.choice(_SLOT_SYMS)
+                                    payout = bet * 10 * mult
+                                elif wp2:
+                                    u_items["luck_potion"]["qty"] -= 1
+                                    if u_items["luck_potion"]["qty"] <= 0:
+                                        del u_items["luck_potion"]
+                                    set_user_items(user_id, u_items)
+                                    win_sym = _random.choice(_SLOT_SYMS)
+                                    s1 = _random.choice(_SLOT_SYMS)
+                                    s2 = s3 = win_sym
+                                    payout = bet * 2 * mult
+                                else:
+                                    s1 = _random.choice(_SLOT_SYMS)
+                                    s2 = _random.choice(_SLOT_SYMS)
+                                    s3 = _random.choice(_SLOT_SYMS)
+                                    if s1 == s2 == s3:
+                                        payout = bet * 10 * mult
+                                    elif s1 == s2 or s2 == s3 or s1 == s3:
+                                        payout = bet * 2 * mult
+                                    else:
+                                        payout = -bet
+                                add_balance(user_id, payout)
+                            send_message(token, chat_id, f"\U0001F3B0 {s1}{s2}{s3} {'+' if payout>0 else ''}{fmt_coin(payout)}")
+                            _ts.sleep(0.8)
+                    send_message(token, chat_id, "\U0001F6AB Тест магазина остановлен.")
+
+                import threading as _test_th
+                _test_th.Thread(target=_testshop_loop, daemon=True).start()
+                return True
+
+            if cmd == "/logs" and args:
+                if args[0] == "image" and len(args) > 1 and args[1] == "off":
+                    _SCANNING_IMAGES = False
+                    reply("\u2705 Сканирование остановлено.")
+                    return True
+                if args[0] == "image":
+                    reply("\U0001F4F8 Сканирую чаты в поиске фото... это может занять время. /logs image off — остановить.")
+                    _scan_chats_for_images(token)
+                    return True
+
+        if cmd == "/buy":
+            if not args:
+                reply("Использование: /buy <id>\nСписок товаров: /shop")
+                return True
+            item_id = args[0].lower()
+            item = SHOP_ITEMS.get(item_id)
+            if not item:
+                reply("❌ Такого предмета нет в магазине.")
+                return True
+            balance = get_balance(user_id)
+            if balance < item['price']:
+                reply(f"❌ Недостаточно монет. Нужно {fmt_coin(item['price'])}, у вас {fmt_coin(balance)}.")
+                return True
+            add_balance(user_id, -item['price'])
+            with _user_item_lock(user_id):
+                user_items = get_user_items(user_id)
+                if item["type"] == "timed":
+                    if has_active_item(user_id, item_id):
+                        user_items[item_id]["expires_at"] += item["duration_min"] * 60
+                    else:
+                        user_items[item_id] = {
+                            "purchased_at": time.time(),
+                            "expires_at": time.time() + item["duration_min"] * 60
+                        }
+                    set_user_items(user_id, user_items)
+                    reply(f"✅ Куплено <b>{item['name']}</b>! Длится {format_duration(item['duration_min'])}.\nБаланс: {fmt_coin(get_balance(user_id))}.", "HTML")
+                elif item["type"] == "single":
+                    if item_id in user_items:
+                        user_items[item_id] = {"qty": user_items[item_id].get("qty", 1) + 1}
+                    else:
+                        user_items[item_id] = {"qty": 1}
+                    set_user_items(user_id, user_items)
+                    reply(f"✅ Куплено <b>{item['name']}</b>! (x{user_items[item_id]['qty']})\nБаланс: {fmt_coin(get_balance(user_id))}.", "HTML")
+            return True
+
+        if cmd == "/tokens":
+            pro = is_pro_user(user_id)
+            if pro:
+                limit = PRO_TOKEN_LIMIT
+                remaining, hours_left = get_token_remaining(user_id)
                 bar_len = 10
+                used = limit - remaining
                 filled = int(bar_len * used / limit) if limit else 0
                 bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
                 reply(
-                    f"\U0001F916 Токены Groq:\n"
+                    f"\U0001F916 Токены (Pro):\n"
                     f"{bar}\n"
-                    f"{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)"
+                    f"{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\n"
+                    f"Восстановление: {hours_left}h / {PRO_PERIOD_HOURS}h"
                 )
-                return True
+            else:
+                limit = FREE_TOKEN_LIMIT
+                remaining, hours_left = get_token_remaining(user_id)
+                bar_len = 10
+                used = limit - remaining
+                filled = int(bar_len * used / limit) if limit else 0
+                bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
+                reply(
+                    f"\U0001F916 Токены (Free):\n"
+                    f"{bar}\n"
+                    f"{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\n"
+                    f"Восстановление: {hours_left}h / {FREE_PERIOD_HOURS}h"
+                )
+            return True
 
-            if cmd == "/server":
-                if len(args) >= 1 and args[0] == "off":
-                    if chat_id in RCON_SERVERS:
-                        del RCON_SERVERS[chat_id]
-                        reply("\u274C Режим консоли Minecraft выключен.")
-                    else:
-                        reply("\u26A0\uFE0F Режим консоли не активен.")
-                    return True
-                if len(args) < 3:
-                    reply("Использование: /server <host> <port> <password>\n"
-                          "Все сообщения после подключения уходят в RCON.\n"
-                          "/server off — выйти из режима консоли.")
-                    return True
-                host = args[0]
-                try:
-                    port = int(args[1])
-                except ValueError:
-                    reply("Порт должен быть числом.")
-                    return True
-                password = args[2]
-                resp, err = rcon_command(host, port, password, "list")
-                if err:
-                    reply(f"\u274C Ошибка подключения: {err}")
-                    return True
-                RCON_SERVERS[chat_id] = {"host": host, "port": port, "password": password}
-                reply(f"\u2705 Подключено к {host}:{port}\n"
-                      f"Ответ на /list:\n{resp}\n"
-                      f"Все сообщения теперь уходят в консоль. /server off — выйти.")
+        if cmd == "/server":
+            if len(args) >= 1 and args[0] == "off":
+                if chat_id in RCON_SERVERS:
+                    del RCON_SERVERS[chat_id]
+                    reply("\u274C Режим консоли Minecraft выключен.")
+                else:
+                    reply("\u26A0\uFE0F Режим консоли не активен.")
                 return True
+            if len(args) < 3:
+                reply("Использование: /server <host> <port> <password>\n"
+                      "Все сообщения после подключения уходят в RCON.\n"
+                      "/server off — выйти из режима консоли.")
+                return True
+            host = args[0]
+            try:
+                port = int(args[1])
+            except ValueError:
+                reply("Порт должен быть числом.")
+                return True
+            password = args[2]
+            resp, err = rcon_command(host, port, password, "list")
+            if err:
+                reply(f"\u274C Ошибка подключения: {err}")
+                return True
+            RCON_SERVERS[chat_id] = {"host": host, "port": port, "password": password}
+            reply(f"\u2705 Подключено к {host}:{port}\n"
+                  f"Ответ на /list:\n{resp}\n"
+                  f"Все сообщения теперь уходят в консоль. /server off — выйти.")
+            return True
 
         # --- Casino disabled check ---
         if BOT_DATA.get("casino_disabled") and cmd in ("/coin", "/dice", "/slot", "/allin"):
@@ -974,16 +2277,143 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
 
         # --- Public commands (level 1+) ---
 
+        if cmd == "/top":
+            try:
+                with db_cursor() as cur:
+                    cur.execute("SELECT user_id, balance FROM users WHERE balance > 0 ORDER BY balance DESC LIMIT 3")
+                    rows = cur.fetchall()
+            except Exception as e:
+                reply(f"Ошибка: {e}")
+                return True
+            if not rows:
+                reply("Нет пользователей с монетами.")
+                return True
+            lines = ["\U0001F3C6 <b>ТОП ПО МОНЕТАМ</b>"]
+            medals = ["\U0001F947", "\U0001F948", "\U0001F949"]
+            for i, (uid, bal) in enumerate(rows):
+                name = f"ID {uid}"
+                try:
+                    info = telegram_request(token, "getChat", {"chat_id": uid})
+                    if info and info.get("ok"):
+                        u = info.get("result", {})
+                        name = u.get("username") and f"@{u['username']}" or u.get("first_name", name)
+                except Exception:
+                    pass
+                lines.append(f"{medals[i]} {name} — {fmt_coin(bal)} Coin")
+            reply("\n".join(lines), "HTML")
+            return True
+
         if cmd in ("/start", "/help"):
-            reply("\U0001F916 ZeroxAI Bot — многофункциональный AI-ассистент и чат-менеджер.\n"
-                  f"Команды: /commands\n"
-                  "Просто напиши вопрос или задачу — я отвечу как AI.")
+            reply(
+                "\U0001F916 ZeroxAI Bot — многофункциональный AI-ассистент и чат-менеджер.\n"
+                f"Команды: /commands\n"
+                "Просто напиши вопрос или задачу — я отвечу как AI.",
+                reply_markup={
+                    "keyboard": [
+                        [{"text": "\u2B50 Подписка"}, {"text": "\U0001F916 Токены"}],
+                    ],
+                    "resize_keyboard": True,
+                }
+            )
             return True
 
         if cmd == "/about":
             reply("ZeroxAI Bot v2.0 — AI-ассистент + управление чатом.\n"
                   "Создатель: Эрик Арутюнян.\n"
-                  "Работает на Groq AI (openai/gpt-oss-120b).")
+                  "\u2705 Бесплатная версия: ZeroxAI Free\n"
+                   "\u2B50 Pro: ZeroxAI Pro (мощнее)")
+            return True
+
+        if cmd == "/mypro":
+            if is_pro_user(user_id):
+                days = pro_days_left(user_id)
+                reply(f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется ZeroxAI Pro.")
+            else:
+                reply("\u274C У вас бесплатная версия ZeroxAI.\n"
+                      "Купите Pro: /buypro")
+            return True
+
+        if cmd == "/info":
+            target_id = user_id
+            target_user = user
+            reply_msg = message.get("reply_to_message")
+            if reply_msg:
+                target_user = reply_msg.get("from", {})
+                target_id = target_user.get("id", user_id)
+            elif args:
+                arg = args[0]
+                if arg.startswith("@"):
+                    username = arg[1:]
+                    try:
+                        chat_info = telegram_request(token, "getChat", {"chat_id": f"@{username}"})
+                        if chat_info and "id" in chat_info:
+                            target_id = chat_info["id"]
+                            target_user = chat_info
+                    except Exception:
+                        reply(f"❌ Пользователь @{username} не найден.")
+                        return True
+                elif arg.isdigit():
+                    target_id = int(arg)
+            try:
+                with db_cursor() as cur:
+                    cur.execute("SELECT balance, max_balance, created_at FROM users WHERE user_id = %s", (target_id,))
+                    row = cur.fetchone()
+            except Exception:
+                row = None
+            u = target_user or {}
+            fname = u.get("first_name", "")
+            lname = u.get("last_name", "")
+            uname = u.get("username", "")
+            full_name = f"{fname} {lname}".strip() or "No name"
+            bal = get_balance(target_id)
+            max_bal = row[1] if row else bal
+            created = row[2] if row else None
+            pro = is_pro_user(target_id)
+            pro_days = str(pro_days_left(target_id)) if pro else ""
+            msg_count = MESSAGE_COUNTS.get(target_id, 0)
+            if created:
+                delta = datetime.datetime.now(datetime.timezone.utc) - created
+                reg_days = delta.days
+                reg_hours = delta.seconds // 3600
+                reg_str = f"{created.strftime('%d.%m.%Y %H:%M')} ({reg_days}д {reg_hours}ч назад)"
+            else:
+                reg_str = "неизвестно"
+            lines = [
+                f"👤 <b>Информация о пользователе</b>",
+                f"Имя: {full_name}",
+                f"Username: @{uname}" if uname else "",
+                f"ID: <code>{target_id}</code>",
+                f"",
+                f"💰 Баланс: {fmt_coin(bal)}",
+                f"🏆 Рекорд баланса: {fmt_coin(max_bal)}",
+                f"⭐ Подписка: {'Pro (' + pro_days + ' дн.)' if pro else 'Free'}",
+                f"💐 Всего сообщений: {msg_count:,}",
+                f"📅 Зарегистрирован: {reg_str}",
+            ]
+            reply("\n".join([l for l in lines if l]), "HTML")
+            return True
+
+        if cmd == "/buypro":
+            if is_pro_user(user_id):
+                reply("\u2B50\uFE0F У вас уже есть Pro-подписка!")
+                return True
+            price_stars = 100
+            result = telegram_request(token, "sendInvoice", {
+                "chat_id": chat_id,
+                "title": "\u2B50 ZeroxAI Pro",
+                "description": (
+                    "\u2714\uFE0F Доступ к мощной модели ZeroxAI Pro\n"
+                    "\u2714\uFE0F Более умные и развёрнутые ответы\n"
+                    "\u2714\uFE0F Приоритетная обработка запросов\n"
+                    "\u2714\uFE0F На 30 дней — продлевается раз в месяц"
+                ),
+                "payload": f"pro_{user_id}",
+                "provider_token": "",
+                "currency": "XTR",
+                "prices": [{"label": "\u2B50 ZeroxAI Pro", "amount": price_stars}],
+            })
+            if not result.get("ok"):
+                reply(f"\u274C Ошибка: {result.get('description', 'неизвестно')}")
             return True
 
         if cmd == "/ping":
@@ -1077,25 +2507,22 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                      "/dice — бросить кубик",
                      "/roll [N] — случайное число",
                      "/choose A | B — выбор",
-                     "/8ball — шар судьбы",
-                     "/hug — обнять",
-                     "/slap — шлёпнуть",
+                      "/8ball — шар судьбы",
+                      "/hug — обнять",
+                      "/slap — шлёпнуть",
                      "/quote — цитата",
                      "/meme — мем",
                      "",
                      "\U0001F4B0 Экономика и казино:",
                      "/free — получить бонус",
+                     "/promo <code> — активировать промокод",
                      "/bal — баланс",
                      "/coin орёл/решка <ставка> — монетка",
                      "/dice <число> <ставка> — кубик (x5)",
-                     "/slot [ставка] — слоты",
-                     "/allin — ва-банк (вся ставка)",
-                     "",
-                     "\U0001F6D2 Магазин:",
-                     "/shop — каталог зелий",
-                     "/buy luck|coins [кол-во] — купить зелье",
-                     "/inv — инвентарь",
-                     "/use luck|coins — выпить зелье",
+                      "/slot [ставка] — слоты",
+                      "/allin — ва-банк (вся ставка)",
+                      "/shop — магазин предметов",
+                      "/buy <id> — купить предмет",
                      "",
                      "\U0001F7E9 Уровень 5 (Помощник+):",
                      "/warn — предупреждение",
@@ -1162,7 +2589,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
         if cmd == "/roll":
             max_val = 100
             for arg in args:
-                if arg.isdigit():
+                if arg.isdigit() and int(arg) > 0:
                     max_val = int(arg)
                     break
             result = _random.randint(1, max_val)
@@ -1246,117 +2673,57 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 "\U0001F44C Когда CI/CD проходит с первого раза:",
                 "\U0001F47B Когда легаси-код без документации:",
                 "\U0001F4A1 — В чём смысл жизни? \n— 42 \n— Что? \n— В дебагере поставь breakpoint на 43 и узнаешь.",
-                "\U0001F913 ChatGPT решает твою задачу, пока ты пьёшь кофе:",
+                "\U0001F913 ZeroxAI решает твою задачу, пока ты пьёшь кофе:",
             ]
             reply(_random.choice(memes))
             return True
 
         # --- Economy ---
         if cmd == "/free":
-            claim = get_claim(user_id)
-            if claim:
-                reply(f"\u26A0\uFE0F Вы уже получали бонус. Ваш баланс: {get_balance(user_id)} монет.")
+            can_claim, reason = can_claim_free(user_id)
+            if not can_claim:
+                reply(f"⏳ {reason}")
                 return True
             add_balance(user_id, STARTING_BALANCE)
             set_claim(user_id, "free")
-            reply(f"\U0001F4B0 Вы получили {STARTING_BALANCE} монет! Ваш баланс: {get_balance(user_id)}.")
+            reply(f"\U0001F4B0 Вы получили {fmt_coin(STARTING_BALANCE)} монет! Ваш баланс: {fmt_coin(get_balance(user_id))}.")
+            return True
+
+        if cmd == "/promo":
+            if not args:
+                reply("Использование: /promo <код>")
+                return True
+            code = args[0]
+            success, result = redeem_promo(user_id, code)
+            if success:
+                reply(f"\U0001F389 Промокод активирован! Вы получили {fmt_coin(result)} монет. Ваш баланс: {fmt_coin(get_balance(user_id))}")
+            else:
+                reply(f"\u26A0\uFE0F {result}")
             return True
 
         if cmd in ("/bal", "/balance"):
-            buffs = get_active_buffs(user_id)
-            extra = ""
-            if buffs:
-                extra = "\n\u26A1 Активные зелья: " + ", ".join(buffs.keys())
-            reply(f"\U0001F4B0 Ваш баланс: {get_balance(user_id)} монет.{extra}")
-            return True
-
-        if cmd == "/shop":
-            lines = ["\U0001F6D2 Магазин зелий ZeroxAI:", ""]
-            for key, item in SHOP_ITEMS.items():
-                lines.append(f"{item['name']}")
-                lines.append(f"  \U0001F4B0 Цена: {item['price']:,} монет")
-                lines.append(f"  {item['desc']}")
-                lines.append(f"  Купить: /buy {key}")
-                lines.append("")
-            lines.append("\U0001F392 Инвентарь: /inv")
-            lines.append("\U0001F9EA Выпить: /use luck или /use coins")
-            reply("\n".join(lines))
-            return True
-
-        if cmd == "/buy":
-            if not args:
-                reply("Использование: /buy luck|coins [кол-во]\nПример: /buy luck 2\nКаталог: /shop")
-                return True
-            item = find_shop_item(args[0])
-            if not item:
-                reply("Товар не найден. Доступно: luck, coins\n/shop — каталог")
-                return True
-            count = 1
-            if len(args) > 1:
-                try:
-                    count = int(args[1])
-                except ValueError:
-                    reply("Количество должно быть числом.")
-                    return True
-            if count <= 0 or count > 99:
-                reply("Количество: от 1 до 99.")
-                return True
-            total = item["price"] * count
-            bal = get_balance(user_id)
-            if total > bal:
-                reply(f"\u26A0\uFE0F Недостаточно монет.\nНужно: {total:,} | Баланс: {bal:,}")
-                return True
-            add_balance(user_id, -total)
-            add_item(user_id, item["id"], count)
-            reply(
-                f"\u2705 Куплено: {item['name']} \u00d7{count}\n"
-                f"\U0001F4B0 Списано: {total:,} монет\n"
-                f"Баланс: {get_balance(user_id):,}\n"
-                f"Выпить: /use {args[0].lower()}"
-            )
-            return True
-
-        if cmd in ("/inv", "/inventory"):
-            reply(format_inventory(user_id))
-            return True
-
-        if cmd == "/use":
-            if not args:
-                reply("Использование: /use luck|coins\n/inv — инвентарь")
-                return True
-            item = find_shop_item(args[0])
-            if not item:
-                reply("Зелье не найдено. Доступно: luck, coins")
-                return True
-            inv = get_inventory(user_id)
-            if inv.get(item["id"], 0) < 1:
-                reply(f"\u26A0\uFE0F У вас нет {item['name']}.\n/shop — купить")
-                return True
-            buffs = get_active_buffs(user_id)
-            if buffs.get(item["id"]):
-                reply(f"\u26A0\uFE0F {item['name']} уже активно! Сыграйте в казино, чтобы эффект сработал.")
-                return True
-            remove_item(user_id, item["id"], 1)
-            set_active_buff(user_id, item["id"], True)
-            reply(
-                f"\U0001F9EA Вы выпили {item['name']}!\n"
-                f"{item['desc']}\n"
-                f"Эффект сработает в следующей игре: /coin /dice /slot"
-            )
+            balance = get_balance(user_id)
+            status_icon = ""
+            if has_active_item(user_id, "vip_status"):
+                status_icon = "💎 "
+            elif has_active_item(user_id, "rich_status"):
+                status_icon = "💰 "
+            reply(f"{status_icon}\U0001F4B0 Ваш баланс: {fmt_coin(balance)} монет.")
             return True
 
         if cmd in ("/transfer", "/give", "/send"):
-            target_ref = parse_user_ref(message, args)
+            target_ref, amount = parse_transfer_input(args, message)
             if not target_ref:
                 reply("Ответьте на сообщение получателя: /transfer <сумма>\nИли укажите ID: /transfer <id> <сумма>")
                 return True
-            try:
-                amount = int([a for a in args if a.lstrip("-").isdigit()][-1])
-            except (IndexError, ValueError):
-                reply("Укажите сумму. Пример: /transfer @username 100")
+            if amount is None:
+                reply("Укажите сумму. Пример: /transfer <id> 100")
                 return True
             if amount <= 0:
                 reply("Сумма должна быть положительной.")
+                return True
+            if amount > MAX_TRANSFER_AMOUNT:
+                reply(f"⚠️ Сумма слишком большая. Максимум: {fmt_coin(MAX_TRANSFER_AMOUNT)}")
                 return True
             tid = None
             if isinstance(target_ref, int):
@@ -1374,16 +2741,16 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
             bal = get_balance(user_id)
             if amount > bal:
-                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {fmt_coin(bal)}")
                 return True
             add_balance(user_id, -amount)
             add_balance(tid, amount)
             sender_name = user.get("first_name", str(user_id))
-            reply(f"\U0001F4B0 Переведено {amount} монет. Ваш баланс: {get_balance(user_id)}")
+            reply(f"\U0001F4B0 Переведено {fmt_coin(amount)} монет. Ваш баланс: {fmt_coin(get_balance(user_id))}")
             try:
                 telegram_request(token, "sendMessage", {
                     "chat_id": tid,
-                    "text": f"\U0001F4B0 Вам переведено {amount} монет от {sender_name}.",
+                    "text": f"\U0001F4B0 Вам переведено {fmt_coin(amount)} монет от {sender_name}.",
                 })
             except Exception:
                 pass
@@ -1407,38 +2774,16 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
             bal = get_balance(user_id)
             if bet > bal:
-                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {fmt_coin(bal)}")
                 return True
             result = _random.choice(["орёл", "решка"])
             win = side in ("орёл", "орел") and result == "орёл" or side in ("решка", "reska") and result == "решка"
-            buffs = get_active_buffs(user_id)
-            luck_used = False
-            coins_used = False
-            if buffs.get("luck_2x") and not win:
-                luck_used = True
-                if apply_luck_buff(False):
-                    win = True
-                    result += " (зелье удачи!)"
             if win:
-                payout = bet
-                if buffs.get("coins_2x"):
-                    payout = apply_coins_buff(payout)
-                    coins_used = True
-                add_balance(user_id, payout)
-                msg = f"\U0001FA99 Выпал: {result}! \U0001F389 Вы выиграли {payout} монет!"
-                if coins_used:
-                    msg += " \U0001F9EA\u00d72"
-                msg += f" Баланс: {get_balance(user_id)}"
-                reply(msg)
+                add_balance(user_id, bet)
+                reply(f"\U0001FA99 Выпал: {result}! \U0001F389 Вы выиграли {fmt_coin(bet)} монет! Баланс: {fmt_coin(get_balance(user_id))}")
             else:
                 add_balance(user_id, -bet)
-                reply(f"\U0001FA99 Выпал: {result}. \u274C Вы проиграли {bet} монет. Баланс: {get_balance(user_id)}")
-            if luck_used:
-                clear_buff(user_id, "luck_2x")
-            if coins_used:
-                clear_buff(user_id, "coins_2x")
-            elif buffs.get("luck_2x") and win:
-                clear_buff(user_id, "luck_2x")
+                reply(f"\U0001FA99 Выпал: {result}. \u274C Вы проиграли {fmt_coin(bet)} монет. Баланс: {fmt_coin(get_balance(user_id))}")
             return True
 
         if cmd == "/dice":
@@ -1459,40 +2804,17 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
             bal = get_balance(user_id)
             if bet > bal:
-                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {fmt_coin(bal)}")
                 return True
             result = _random.randint(1, 6)
             faces = {1: "\u2680", 2: "\u2681", 3: "\u2682", 4: "\u2683", 5: "\u2684", 6: "\u2685"}
-            win = result == guess
-            buffs = get_active_buffs(user_id)
-            luck_used = False
-            coins_used = False
-            if buffs.get("luck_2x") and not win:
-                luck_used = True
-                result2 = _random.randint(1, 6)
-                if result2 == guess:
-                    win = True
-                    result = result2
-            if win:
+            if result == guess:
                 payout = bet * 5
-                if buffs.get("coins_2x"):
-                    payout = apply_coins_buff(payout)
-                    coins_used = True
                 add_balance(user_id, payout)
-                msg = f"\U0001F3B2 {faces[result]} Вы угадали! \U0001F389 Вы выиграли {payout} монет!"
-                if luck_used:
-                    msg += " \U0001F9EA удача"
-                if coins_used:
-                    msg += " \U0001F9EA\u00d72"
-                msg += f" Баланс: {get_balance(user_id)}"
-                reply(msg)
+                reply(f"\U0001F3B2 {faces[result]} Вы угадали! \U0001F389 Вы выиграли {fmt_coin(payout)} монет! Баланс: {fmt_coin(get_balance(user_id))}")
             else:
                 add_balance(user_id, -bet)
-                reply(f"\U0001F3B2 {faces[result]} Не угадали. \u274C Проиграно {bet} монет. Баланс: {get_balance(user_id)}")
-            if luck_used or (buffs.get("luck_2x") and win):
-                clear_buff(user_id, "luck_2x")
-            if coins_used:
-                clear_buff(user_id, "coins_2x")
+                reply(f"\U0001F3B2 {faces[result]} Не угадали. \u274C Проиграно {fmt_coin(bet)} монет. Баланс: {fmt_coin(get_balance(user_id))}")
             return True
 
         if cmd == "/allin":
@@ -1503,80 +2825,158 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
         if cmd == "/slot":
             bet = 50
             for arg in args:
-                if arg.isdigit():
-                    bet = int(arg)
+                cleaned = arg.replace(",", "").replace(".", "")
+                if cleaned.isdigit():
+                    bet = int(cleaned)
                     break
             if bet <= 0:
                 reply("Ставка должна быть положительной.")
                 return True
             bal = get_balance(user_id)
             if bet > bal:
-                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {bal}")
+                reply(f"\u26A0\uFE0F Недостаточно монет. Баланс: {fmt_coin(bal)}")
                 return True
-            resp = telegram_request(token, "sendDice", {
-                "chat_id": chat_id, "emoji": "\U0001F3B0",
-            })
-            try:
-                dice_value = resp["result"]["dice"]["value"]
-            except Exception:
-                dice_value = 1
+
             _SLOT_SYMS = ["\u25AC", "\U0001F347", "\U0001F34B", "7\uFE0F\u20E3"]
-            idx = dice_value - 1
-            r1 = _SLOT_SYMS[idx // 16]
-            r2 = _SLOT_SYMS[(idx % 16) // 4]
-            r3 = _SLOT_SYMS[idx % 4]
-            time.sleep(4)
-            buffs = get_active_buffs(user_id)
-            luck_used = False
-            coins_used = False
-            jackpot = r1 == r2 == r3
-            two_match = r1 == r2 or r2 == r3 or r1 == r3
-            if buffs.get("luck_2x") and not jackpot and not two_match:
-                luck_used = True
-                if _random.random() < 0.35:
-                    two_match = True
-                    r3 = r2
-            if jackpot:
-                payout = bet * 10
-                outcome = "ДЖЕКПОТ"
-                desc = f"три совпадения! {r1}{r2}{r3} Выигрыш x10 = +{payout}"
-            elif two_match:
-                payout = bet * 2
-                outcome = "ВЫИГРЫШ"
-                desc = f"два совпадения! {r1} {r2} {r3} Выигрыш x2 = +{payout}"
+
+            def dice_symbols(dval):
+                idx = dval - 1
+                return (_SLOT_SYMS[idx // 16], _SLOT_SYMS[(idx % 16) // 4], _SLOT_SYMS[idx % 4])
+
+            def send_dice_get_value():
+                resp = telegram_request(token, "sendDice", {"chat_id": chat_id, "emoji": "\U0001F3B0"})
+                try:
+                    return resp["result"]["dice"]["value"], resp["result"].get("message_id")
+                except Exception:
+                    return 1, None
+
+            def is_pair(s1, s2, s3):
+                return s1 == s2 or s2 == s3 or s1 == s3
+
+            def is_jackpot(s1, s2, s3):
+                return s1 == s2 == s3
+
+            # check for potions + multiplier (locked per user to avoid race with /buy)
+            with _user_item_lock(user_id):
+                user_items = get_user_items(user_id)
+                want_jackpot = False
+                want_pair = False
+                potion_used = None
+
+                if user_items.get("jackpot_potion", {}).get("qty", 0) > 0:
+                    want_jackpot = True
+                    potion_used = "jackpot_potion"
+                elif user_items.get("luck_potion", {}).get("qty", 0) > 0:
+                    want_pair = True
+                    potion_used = "luck_potion"
+
+                print(f"[SLOT] user={user_id} items={user_items} want_pair={want_pair} want_jackpot={want_jackpot} potion={potion_used}", flush=True)
+
+                # check multiplier
+                multiplier = 1
+                if has_active_item(user_id, "multiplier"):
+                    multiplier = 2
+
+                # consume potion immediately (before roll)
+                if potion_used:
+                    user_items[potion_used]["qty"] -= 1
+                    if user_items[potion_used]["qty"] <= 0:
+                        del user_items[potion_used]
+                    set_user_items(user_id, user_items)
+
+            # force win if potion is active — skip dice loop, directly set result
+            if want_jackpot:
+                s1 = s2 = s3 = _random.choice(_SLOT_SYMS)
+            elif want_pair:
+                win_sym = _random.choice(_SLOT_SYMS)
+                s1 = _random.choice(_SLOT_SYMS)
+                s2 = s3 = win_sym
             else:
-                payout = 0
-                outcome = "ПРОИГРЫШ"
-                desc = f"нет совпадений: {r1} {r2} {r3} Проиграно {bet}"
-            if payout > 0:
-                if buffs.get("coins_2x"):
-                    payout = apply_coins_buff(payout)
-                    coins_used = True
-                    desc += " (зелье монет x2!)"
+                dice_value, _ = send_dice_get_value()
+                s1, s2, s3 = dice_symbols(dice_value)
+
+            print(f"[SLOT] result s1={s1} s2={s2} s3={s3} is_pair={is_pair(s1,s2,s3)} is_jackpot={is_jackpot(s1,s2,s3)}", flush=True)
+
+            time.sleep(1)
+
+            if is_jackpot(s1, s2, s3):
+                base = bet * 10
+                payout = base * multiplier
                 add_balance(user_id, payout)
+                line = f"\U0001F4B0 Награда: {fmt_coin(base)}"
+                if multiplier > 1:
+                    line += f" x{multiplier} = {fmt_coin(payout)}"
+                line += " Coin"
+                result = (
+                    f"\U0001F3B0 Выпало: {s1} {s2} {s3}\n"
+                    f"\U0001F389 Поздравляем! <b>ДЖЕКПОТ!</b>\n\n"
+                    f"{line}\n"
+                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
+                )
+            elif is_pair(s1, s2, s3):
+                base = bet * 2
+                payout = base * multiplier
+                add_balance(user_id, payout)
+                line = f"\U0001F4B0 Награда: {fmt_coin(base)}"
+                if multiplier > 1:
+                    line += f" x{multiplier} = {fmt_coin(payout)}"
+                line += " Coin"
+                result = (
+                    f"\U0001F3B0 Выпало: {s1} {s2} {s3}\n"
+                    f"\U0001F389 Поздравляем! <b>ВЫИГРЫШ!</b>\n\n"
+                    f"{line}\n"
+                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
+                )
             else:
                 add_balance(user_id, -bet)
-            if luck_used or (buffs.get("luck_2x") and payout > 0):
-                clear_buff(user_id, "luck_2x")
-            if coins_used:
-                clear_buff(user_id, "coins_2x")
-            import html as _html
-            name = user.get("first_name", f"ID {user_id}")
-            ai_text = call_groq([{
-                "role": "system",
-                "content": "Ты ведущий казино. Пиши кратко, 1 предложение, элегантно. Без HTML, без звёздочек. Обратись к игроку по имени, упомяни комбинацию и сумму. Минимум эмодзи.",
-            }, {
-                "role": "user",
-                "content": f"Игрок {name} поставил {bet} монет на слот.\nВыпало: {r1} {r2} {r3}\nРезультат: {outcome}! {desc}",
-            }])
-            if ai_text and "Не удалось" not in ai_text and "Ошибка" not in ai_text:
-                clean = _html.escape(ai_text)
-                line = clean.replace(outcome, f"<b>{outcome}</b>")
-                line = re.sub(r"([+-]\d+)", r"<b>\1</b>", line)
-            else:
-                line = f"<b>{outcome}!</b> {_html.escape(desc)}"
-            result = f"{line}\n\n\u26A1 Баланс: {get_balance(user_id)}"
+                result = (
+                    f"\U0001F3B0 Выпало: {s1} {s2} {s3}\n"
+                    f"\U0001F614 Проигрыш: -{fmt_coin(bet)} Coin\n"
+                    f"\u26A1 Баланс: {fmt_coin(get_balance(user_id))}"
+                )
             reply(result, "HTML")
+            return True
+
+        if cmd == "/shop":
+            lines = ["🏪 <b>Магазин</b>", 'Купить: /buy [id]', ""]
+            for item_id, item in SHOP_ITEMS.items():
+                status = get_shop_status(user_id, item_id)
+                duration = ""
+                if item["type"] == "timed":
+                    duration = f" ⏱ {format_duration(item['duration_min'])}"
+                elif item["type"] == "single":
+                    duration = " 🔄 1 spin"
+                lines.append(
+                    f"<b>{item['name']}</b>\n"
+                    f"ID: <code>{item_id}</code> | Цена: {fmt_coin(item['price'])}{duration}\n"
+                    f"{item['description']}{status}"
+                )
+                lines.append("")
+            reply("\n".join(lines), "HTML")
+            return True
+
+        if cmd == "/ben":
+            choice = _random.choice(["yes", "no"])
+            fid = _BEN_FILES.get(choice)
+            if fid:
+                try:
+                    telegram_request(token, "sendAnimation", {"chat_id": chat_id, "animation": fid})
+                except Exception:
+                    reply("Да" if choice == "yes" else "Нет")
+            else:
+                # fallback: send MP4 directly
+                path = _BEN_PATHS.get(choice)
+                if path and os.path.exists(path):
+                    try:
+                        with open(path, "rb") as f:
+                            data = f.read()
+                        resp = telegram_upload(token, "sendAnimation", {"chat_id": chat_id}, "animation", data, f"ben_{choice}.mp4", "video/mp4")
+                        if resp and "result" in resp:
+                            _BEN_FILES[choice] = resp["result"]["animation"]["file_id"]
+                    except Exception:
+                        reply("Да" if choice == "yes" else "Нет")
+                else:
+                    reply("Да" if choice == "yes" else "Нет")
             return True
 
         if cmd == "/addsticker":
@@ -1677,7 +3077,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 cd.setdefault("muted", {})
                 cd["muted"][str(target)] = until
                 save_data()
-                reply(f"\U0001F507 {target} заглушён на {format_duration(minutes)}.")
+                reply(f"\U0001F507 {target} заглушён на {format_minutes_duration(minutes)}.")
             except Exception as e:
                 reply(f"\u274C Ошибка: {e}")
             return True
@@ -1975,17 +3375,106 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if not text:
                 reply("Напишите ваш вопрос после /support. Например: /support У меня проблема с ботом")
                 return True
-            reply(f"\U0001F4E9 Ваш запрос отправлен в техподдержку. Ожидайте ответа.")
+            try:
+                with db_cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO tickets (user_id, chat_id, username, question) VALUES (%s, %s, %s, %s) RETURNING id",
+                        (user_id, chat_id, user.get("username", ""), text)
+                    )
+                    ticket_id = cur.fetchone()[0]
+            except Exception as e:
+                print(f"Failed to save ticket: {e}", file=sys.stderr)
+                reply("\u274C Ошибка при создании запроса. Попробуйте позже.")
+                return True
+            reply(f"\U0001F4E9 Ваш запрос №{ticket_id} отправлен в техподдержку. Ожидайте ответа.")
             cd = get_chat_data(chat_id)
+            notified = False
             for uid, rname in cd.get("users", {}).items():
                 if cd.get("roles", {}).get(rname, 0) >= 10:
                     try:
                         telegram_request(token, "sendMessage", {
                             "chat_id": uid,
-                            "text": f"\U0001F6E1\uFE0F Запрос в техподдержку от @{user.get('username', user_id)} (чат {chat_id}):\n{text}",
+                            "text": f"\U0001F6E1\uFE0F Запрос №{ticket_id} в техподдержку от @{user.get('username', user_id)} (чат {chat_id}):\n{text}\n\nОтветить: /answer {ticket_id} <текст>",
+                        })
+                        notified = True
+                    except Exception:
+                        pass
+            if not notified:
+                for target in ADMIN_TICKET_TARGETS:
+                    try:
+                        telegram_request(token, "sendMessage", {
+                            "chat_id": target,
+                            "text": f"\U0001F6E1\uFE0F Запрос №{ticket_id} в техподдержку от @{user.get('username', user_id)} (чат {chat_id}):\n{text}\n\nОтветить: /answer {ticket_id} <текст>",
                         })
                     except Exception:
                         pass
+            return True
+
+        if cmd == "/answer":
+            if not require_ts(): return True
+            if message.get("reply_to_message"):
+                support_text = cmd_text
+                if not support_text:
+                    reply("Напишите ответ после /answer. Например: /answer Ваш ответ")
+                    return True
+                try:
+                    with db_cursor() as cur:
+                        cur.execute(
+                            "SELECT id, user_id, chat_id, question, status FROM tickets WHERE status = 'open' ORDER BY id DESC LIMIT 1"
+                        )
+                        row = cur.fetchone()
+                except Exception as e:
+                    print(f"Failed to find ticket: {e}", file=sys.stderr)
+                    row = None
+                if not row:
+                    reply("\u274C Нет открытых тикетов для ответа.")
+                    return True
+                ticket_id, t_user_id, t_chat_id, question, status = row
+            elif args and args[0].isdigit():
+                ticket_id = int(args[0])
+                support_text = " ".join(args[1:]).strip()
+                if not support_text:
+                    reply("Напишите ответ после ID тикета. Пример: /answer 5 Ваш ответ")
+                    return True
+                try:
+                    with db_cursor() as cur:
+                        cur.execute(
+                            "SELECT user_id, chat_id, question, status FROM tickets WHERE id = %s", (ticket_id,)
+                        )
+                        row = cur.fetchone()
+                except Exception as e:
+                    print(f"Failed to find ticket {ticket_id}: {e}", file=sys.stderr)
+                    row = None
+                if not row:
+                    reply(f"\u274C Тикет №{ticket_id} не найден.")
+                    return True
+                t_user_id, t_chat_id, question, status = row
+                if status != "open":
+                    reply(f"\u274C Тикет №{ticket_id} уже закрыт.")
+                    return True
+            else:
+                reply("Использование: /answer <ID тикета> <текст ответа> или ответьте на сообщение о тикете: /answer <текст>")
+                return True
+            try:
+                with db_cursor() as cur:
+                    cur.execute(
+                        "UPDATE tickets SET status = 'answered', answer_text = %s, answered_by = %s, answered_at = NOW() WHERE id = %s AND status = 'open'",
+                        (support_text, user_id, ticket_id)
+                    )
+            except Exception as e:
+                print(f"Failed to update ticket {ticket_id}: {e}", file=sys.stderr)
+                reply("\u274C Ошибка при отправке ответа.")
+                return True
+            try:
+                mention = f"@{user.get('username')}" if user.get("username") else f"id{user_id}"
+                telegram_request(token, "sendMessage", {
+                    "chat_id": t_chat_id,
+                    "text": f"\U0001F6E1\uFE0F Ответ техподдержки на ваш запрос №{ticket_id}:\n\n{support_text}",
+                    "parse_mode": "HTML",
+                })
+                reply(f"\u2705 Ответ отправлен пользователю (тикет №{ticket_id}).")
+            except Exception as e:
+                reply(f"\u2705 Ответ сохранён, но не доставлен пользователю: {e}")
             return True
 
         if cmd == "/clean":
@@ -2118,6 +3607,42 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
     return False
 
 
+def handle_update(token, update):
+    if "pre_checkout_query" in update:
+        try:
+            pq = update["pre_checkout_query"]
+            telegram_request(token, "answerPreCheckoutQuery", {
+                "pre_checkout_query_id": pq["id"],
+                "ok": True
+            })
+        except BaseException as e:
+            print(f"Error handling pre_checkout_query: {e}", file=sys.stderr)
+        return
+    if "message" in update:
+        try:
+            msg = update["message"]
+            if "successful_payment" in msg:
+                user_id = msg.get("from", {}).get("id")
+                if user_id:
+                    add_pro_user(user_id)
+                    reply_message(token, msg["chat"]["id"],
+                        "\u2B50\uFE0F Поздравляю! Вы стали Pro-пользователем! "
+                        "Теперь вы используете ZeroxAI Pro — более мощную модель.", msg.get("message_id"))
+                return
+            handle_message(token, msg)
+        except BaseException as e:
+            print(f"Error handling message: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+    if "callback_query" in update:
+        try:
+            handle_callback_query(token, update["callback_query"])
+        except BaseException as e:
+            print(f"Error handling callback: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+
+
 def handle_message(token, message):
     global BOT_ID, BOT_USERNAME
 
@@ -2127,11 +3652,51 @@ def handle_message(token, message):
     user_id = user.get("id", chat_id)
     text = (message.get("text") or "").strip()
 
-    if not chat_id or not text:
+    if not chat_id:
+        return
+    if not text:
+        if message.get("photo") or message.get("document"):
+            msg_id = message.get("message_id")
+            if message.get("photo"):
+                photo = message.get("photo")
+                best = photo[-1]
+                file_id = best.get("file_id")
+            else:
+                doc = message.get("document")
+                mime = (doc.get("mime_type") or "")
+                if not mime.startswith("image/"):
+                    return
+                file_id = doc.get("file_id")
+            if not BOT_DATA.get("hidden", {}).get("logs"):
+                uname = user.get("username") or str(user_id)
+                cap = message.get("caption", "")
+                cap_text = f"\U0001F4F7 Фото от {uname}"
+                if cap:
+                    cap_text += f"\n{cap}"
+                try:
+                    telegram_request(token, "sendPhoto", {"chat_id": OWNER_ID, "photo": file_id, "caption": cap_text})
+                except:
+                    pass
+            if user_id != OWNER_ID:
+                reply = "\u26A0\uFE0F Модель генерации изображений неактивна, но можете спокойно общаться."
+                try:
+                    telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": reply})
+                except:
+                    pass
         return
 
     if BOT_DATA.get("bot_stopped") and user_id != 6734685656:
         return
+
+    if not user.get("is_bot"):
+        increment_message_count(user_id)
+        uname = user.get("username", "")
+        if uname:
+            try:
+                with db_cursor() as cur:
+                    cur.execute("UPDATE users SET username = %s WHERE user_id = %s AND username != %s", (uname, user_id, uname))
+            except Exception:
+                pass
 
     if not should_respond(message):
         return
@@ -2161,11 +3726,105 @@ def handle_message(token, message):
             text = text.replace(cmd_name, cmd_name.split("@")[0], 1)
         if handle_command(token, message, chat, user, chat_id, user_id, text):
             return
+        return  # don't send unknown commands to AI
+
+    # handle reply keyboard buttons
+    km = _menu_kb()
+    if text in ("\u2B50 Подписка", "\U0001F916 Токены"):
+        if text == "\u2B50 Подписка":
+            if is_pro_user(user_id):
+                days = pro_days_left(user_id)
+                reply_message(token, chat_id,
+                    f"\u2B50\uFE0F У вас активна Pro-подписка! Осталось {days} дн.\nИспользуется ZeroxAI Pro.", None, reply_markup=km)
+            else:
+                reply_message(token, chat_id,
+                    "\u274C У вас бесплатная версия ZeroxAI.\nКупите Pro: /buypro", None, reply_markup=km)
+        else:
+            pro = is_pro_user(user_id)
+            limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
+            period = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
+            remaining, hours_left = get_token_remaining(user_id)
+            used = limit - remaining
+            bar_len = 10
+            filled = int(bar_len * used / limit) if limit else 0
+            bar = "\u2588" * min(filled, bar_len) + "\u2591" * (bar_len - min(filled, bar_len))
+            tier = "Pro" if pro else "Free"
+            reply_message(token, chat_id,
+                f"\U0001F916 Токены ({tier}):\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\nВосстановление: {hours_left}h / {period}h", None, reply_markup=km)
+        return
+
+    # estimate input token count (rough: 1 token ~ 4 chars)
+    est_input = len(text) // 4
+    est_output_limit = 500
+    ok, remaining = try_use_tokens(user_id, est_input, est_output_limit)
+    if not ok:
+        pro = is_pro_user(user_id)
+        limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
+        reply_message(token, chat_id,
+            f"\u274C Лимит токенов исчерпан ({remaining:,} / {limit:,}).\n"
+            f"Подождите восстановления или купите Pro: /buypro", message.get("message_id"), reply_markup=km)
+        return
+
+    lang = detect_lang(text)
+    frames_map = {
+        "ru": ["\U0001F914 Думает...", "\U0001F914 Думает..", "\U0001F914 Думает."],
+        "en": ["\U0001F914 Thinking...", "\U0001F914 Thinking..", "\U0001F914 Thinking."],
+        "arm": ["\U0001F914 Մտածում է...", "\U0001F914 Մտածում է..", "\U0001F914 Մտածում է."],
+    }
+    frames = frames_map.get(lang, frames_map["ru"])
+    think_result = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": frames[0]})
+    think_msg_id = think_result.get("result", {}).get("message_id")
+    if think_msg_id:
+        import threading as _th
+        _anim_stop = _th.Event()
+        def _think_anim():
+            import time as _t
+            while not _anim_stop.is_set():
+                for fr in frames:
+                    if _anim_stop.is_set():
+                        return
+                    _t.sleep(0.4)
+                    if _anim_stop.is_set():
+                        return
+                    try:
+                        edit_message(token, chat_id, think_msg_id, fr)
+                    except:
+                        pass
+        _anim_thread = _th.Thread(target=_think_anim, daemon=True)
+        _anim_thread.start()
 
     try:
-        answer = call_groq(build_messages(chat_id, text))
+        answer = call_ai(build_messages(chat_id, text, user.get("username"), user.get("first_name"), user_id), user_id)
+        if user.get("username"):
+            try:
+                own_info = telegram_request(token, "getChat", {"chat_id": OWNER_ID})
+                if own_info.get("ok"):
+                    own_uname = own_info.get("result", {}).get("username") or ""
+                    sender_uname = user.get("username") or ""
+                    if own_uname and own_uname != sender_uname:
+                        answer = answer.replace(f"@{own_uname}", f"@{sender_uname}")
+            except:
+                pass
+        if think_msg_id:
+            _anim_stop.set()
+            _anim_thread.join(timeout=0.5)
+            telegram_request(token, "deleteMessage", {"chat_id": chat_id, "message_id": think_msg_id})
+            first_msg_id = None
+            for chunk in split_message(answer):
+                r = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML", "disable_web_page_preview": True})
+                if first_msg_id is None and r.get("ok"):
+                    first_msg_id = r.get("result", {}).get("message_id")
+            answer_msg_id = first_msg_id or think_msg_id
+        else:
+            send_message(token, chat_id, answer, parse_mode="HTML")
+            answer_msg_id = None
+
         remember(chat_id, text, answer)
-        answer_msg_id = send_thinking_and_answer(token, chat_id, answer)
+
+        # log and forward conversation to owner
+        username = user.get("username") or user.get("first_name") or str(user_id)
+        log_conversation(user_id, chat_id, username, text, answer)
+        forward_to_owner(token, user_id, username, text, answer, chat_id)
 
         if answer_msg_id and has_code_blocks(answer):
             blocks = parse_code_blocks(answer)
@@ -2178,21 +3837,172 @@ def handle_message(token, message):
         print(f"Error in AI chat handler: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
+        if think_msg_id:
+            try:
+                _anim_stop.set()
+            except:
+                pass
+            try:
+                edit_message(token, chat_id, think_msg_id, f"\u274C Ошибка: {e}")
+            except:
+                pass
         reply_message(token, chat_id, f"\u274C Ошибка: {e}", message.get("message_id"))
 
+    # persist menu keyboard
+    try:
+        telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": "\u200B", "reply_markup": _menu_kb()})
+    except Exception:
+        pass
+
+
+def set_webhook(token):
+    webhook_url = ""
+    if os.getenv("FLY_APP_NAME"):
+        webhook_url = f"https://{os.getenv('FLY_APP_NAME')}.fly.dev/webhook/{token}"
+    elif os.getenv("RAILWAY_PUBLIC_DOMAIN"):
+        webhook_url = f"https://{os.getenv('RAILWAY_PUBLIC_DOMAIN')}/webhook/{token}"
+    elif os.getenv("RENDER_EXTERNAL_URL"):
+        webhook_url = f"{os.getenv('RENDER_EXTERNAL_URL')}/webhook/{token}"
+
+    if not webhook_url:
+        print("Hosting environment not detected. Skipping webhook setup (good for local dev).", flush=True)
+        return False
+
+    payload = {"url": webhook_url}
+    if WEBHOOK_SECRET_TOKEN:
+        payload["secret_token"] = WEBHOOK_SECRET_TOKEN
+
+    try:
+        result = telegram_request(token, "setWebhook", payload)
+        if result.get("ok"):
+            print(f"Webhook set to {webhook_url}", flush=True)
+            return True
+        else:
+            print(f"Failed to set webhook: {result.get('description')}", file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"Exception setting webhook: {e}", file=sys.stderr)
+        return False
+
+
+def webhook_handler_factory(token):
+    class WebhookHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path in {"/", "/health", "/healthz"}:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"ok")
+            else:
+                self.send_error(404)
+
+        def do_POST(self):
+            if self.path == f"/webhook/{token}":
+                if WEBHOOK_SECRET_TOKEN:
+                    received = self.headers.get("X-Telegram-Bot-Api-Secret-Token") or self.headers.get("x-telegram-bot-api-secret-token")
+                    if received != WEBHOOK_SECRET_TOKEN:
+                        self.send_response(403)
+                        self.end_headers()
+                        return
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len)
+                update = json.loads(body)
+                threading.Thread(target=handle_update, args=(token, update)).start()
+                self.send_response(200)
+                self.end_headers()
+            elif self.path == "/api/chat":
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len)
+                try:
+                    data = json.loads(body)
+                    chat_id = data.get("chat_id", "android_app")
+                    user_text = data.get("message", "").strip()
+                    user_id = data.get("user_id", 0)
+                    if not user_text:
+                        resp = {"error": "Пустое сообщение"}
+                        self.send_response(400)
+                    else:
+                        messages = build_messages(chat_id, user_text, data.get("username"), data.get("first_name"), user_id)
+                        answer = call_ai(messages, int(user_id)) if user_id else call_groq(messages)
+                        remember(chat_id, user_text, answer)
+                        resp = {"response": answer}
+                        self.send_response(200)
+                except Exception as e:
+                    resp = {"error": str(e)}
+                    self.send_response(500)
+                body_resp = json.dumps(resp).encode("utf-8")
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body_resp)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    return WebhookHandler
 
 def main():
     global BOT_ID, BOT_USERNAME
 
+    def signal_handler(sig, frame):
+        print("Termination signal received, saving data...", flush=True)
+        save_data()
+        save_histories_to_db()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    init_db()
     load_data()
 
     token = get_env("TELEGRAM_BOT_TOKEN")
 
-    print(f"TELEGRAM_BASE_URL={TELEGRAM_BASE_URL}", flush=True)
+    while True:
+        try:
+            bot_info = telegram_request(token, "getMe")
+            if bot_info and "result" in bot_info:
+                BOT_ID = bot_info.get("result", {}).get("id")
+                BOT_USERNAME = bot_info.get("result", {}).get("username", "")
+                print(f"ZeroxAI Telegram bot is running. @{BOT_USERNAME} (id={BOT_ID})", flush=True)
+                load_sticker_pool(token)
+                load_ben_stickers(token)
+                telegram_request(token, "setMyCommands", {
+                    "commands": [
+                        {"command": "start", "description": "Главное меню"},
+                        {"command": "tokens", "description": "Токены ZeroxAI"},
+                        {"command": "mypro", "description": "Моя подписка"},
+                        {"command": "buypro", "description": "Купить Pro"},
+                        {"command": "about", "description": "О боте"},
+                        {"command": "commands", "description": "Все команды"},
+                    ]
+                })
+                break
+        except Exception as e:
+            print(f"Failed to connect to Telegram API: {e}, retrying in 10s...")
+        time.sleep(10)
+
+    # send recent conversations to owner on startup
+    try:
+        threading.Thread(target=send_recent_conversations, args=(token,), daemon=True).start()
+    except Exception:
+        pass
+
+    # start auto-answer thread for tickets
+    try:
+        threading.Thread(target=auto_answer_tickets, args=(token,), daemon=True).start()
+    except Exception:
+        pass
+
 
     while True:
         try:
-            _run_bot(token)
+            if set_webhook(token):
+                port = int(os.getenv("PORT", "8080"))
+                server = ThreadingHTTPServer(("0.0.0.0", port), webhook_handler_factory(token))
+                print(f"Webhook server listening on port {port}", flush=True)
+                server.serve_forever()
+            else:
+                _run_polling_bot(token)
         except BaseException as e:
             print(f"Bot crashed: {e}, restarting in 10s...", file=sys.stderr)
             import traceback
@@ -2200,43 +4010,17 @@ def main():
             time.sleep(10)
 
 
-def _run_bot(token):
+def _run_polling_bot(token):
     global BOT_ID, BOT_USERNAME
-
-    while True:
-        try:
-            bot_info = telegram_request(token, "getMe")
-            if bot_info and "result" in bot_info:
-                break
-        except Exception as e:
-            print(f"Failed to connect to Telegram API: {e}, retrying in 10s...")
-        time.sleep(10)
-
-    BOT_ID = bot_info.get("result", {}).get("id")
-    BOT_USERNAME = bot_info.get("result", {}).get("username", "")
-    print(f"ZeroxAI Telegram bot is running. @{BOT_USERNAME} (id={BOT_ID})", flush=True)
 
     offset = 0
 
     while True:
         try:
-            updates = get_updates(token, offset)
+            updates = telegram_request(token, "getUpdates", {"offset": offset, "timeout": 10}).get("result", [])
             for update in updates:
                 offset = max(offset, update["update_id"] + 1)
-                if "message" in update:
-                    try:
-                        handle_message(token, update["message"])
-                    except BaseException as e:
-                        print(f"Error handling message: {e}", file=sys.stderr)
-                        import traceback
-                        traceback.print_exc()
-                if "callback_query" in update:
-                    try:
-                        handle_callback_query(token, update["callback_query"])
-                    except BaseException as e:
-                        print(f"Error handling callback: {e}", file=sys.stderr)
-                        import traceback
-                        traceback.print_exc()
+                threading.Thread(target=handle_update, args=(token, update), daemon=True).start()
         except KeyboardInterrupt:
             print("Bot stopped.")
             raise
