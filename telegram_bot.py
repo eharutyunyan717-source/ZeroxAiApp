@@ -33,6 +33,11 @@ _GEMINI_LOCK = threading.Lock()
 USER_HISTORIES = {}
 MESSAGE_COUNTS = {}
 MESSAGE_COUNTS_LOCK = threading.Lock()
+SPAM_TRACKER = {}
+SPAM_WINDOW_SECONDS = 3.0
+SPAM_BURST_THRESHOLD = 5
+SPAM_WARNING_THRESHOLD = 3
+SPAM_MUTE_MINUTES = 5
 BOT_ID = None
 BOT_USERNAME = None
 
@@ -42,6 +47,78 @@ def increment_message_count(user_id):
         return
     with MESSAGE_COUNTS_LOCK:
         MESSAGE_COUNTS[user_id] = MESSAGE_COUNTS.get(user_id, 0) + 1
+
+
+def check_spam_and_mute(token, chat_id, user_id, message_id=None, now=None):
+    if not chat_id or not user_id:
+        return False
+    if now is None:
+        now = time.time()
+
+    key = (str(chat_id), str(user_id))
+    entry = SPAM_TRACKER.get(key)
+    if entry and entry.get("muted_until", 0) > now:
+        remaining = int(entry["muted_until"] - now)
+        try:
+            reply_message(
+                token,
+                chat_id,
+                f"🚫 Вы не можете написать мне, у вас есть мут. Осталось: {format_remaining_duration(remaining)}",
+                message_id,
+            )
+        except Exception:
+            pass
+        return True
+
+    cutoff = now - SPAM_WINDOW_SECONDS
+    times = [] if not entry else entry.get("times", [])
+    times = [t for t in times if t > cutoff]
+    times.append(now)
+
+    if len(times) >= SPAM_BURST_THRESHOLD:
+        warning_count = (entry or {}).get("warning_count", 0) + 1
+        if warning_count >= SPAM_WARNING_THRESHOLD:
+            cd = get_chat_data(chat_id)
+            cd.setdefault("muted", {})
+            until = int(now) + SPAM_MUTE_MINUTES * 60
+            cd["muted"][str(user_id)] = {"until": until, "minutes": SPAM_MUTE_MINUTES}
+            save_data()
+            try:
+                telegram_request(token, "restrictChatMember", {
+                    "chat_id": chat_id,
+                    "user_id": user_id,
+                    "permissions": {"can_send_messages": False},
+                    "until_date": until,
+                })
+            except Exception:
+                pass
+            try:
+                reply_message(
+                    token,
+                    chat_id,
+                    f"🚫 Слишком много сообщений за несколько секунд, пожалуйста, перестаньте спамить. Вы получили мут на {SPAM_MUTE_MINUTES} минут.",
+                    message_id,
+                )
+            except Exception:
+                pass
+            SPAM_TRACKER[key] = {"times": [], "warning_count": warning_count, "muted_until": until}
+            return True
+
+        try:
+            reply_message(
+                token,
+                chat_id,
+                f"⚠️ Слишком много сообщений за несколько секунд, пожалуйста, перестаньте спамить {warning_count}/{SPAM_WARNING_THRESHOLD}",
+                message_id,
+            )
+        except Exception:
+            pass
+        SPAM_TRACKER[key] = {"times": [], "warning_count": warning_count}
+        return False
+
+    SPAM_TRACKER[key] = {"times": times, "warning_count": (entry or {}).get("warning_count", 0)}
+    return False
+
 CODE_STORE = {}
 BOT_DATA = {}
 TOKEN_USAGE = {"prompt": 0, "completion": 0, "total": 0}
@@ -182,8 +259,8 @@ DB_POOL = None
 WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN")
 STARTING_BALANCE = 500
 FREE_COOLDOWN_SECONDS = 12 * 60 * 60
-MAX_TRANSFER_AMOUNT = 100_000_000_000_000_000_000_000
-MAX_BALANCE = 9_000_000_000_000_000_000_000_000
+MAX_TRANSFER_AMOUNT = 100_000_000_000_000_000_000_000_000_000_000_000
+MAX_BALANCE = 9_000_000_000_000_000_000_000_000_000_000_000_000
 PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500, "topaichatmeneger2026": 0}
 ADMIN_TICKET_TARGETS = ["@er1kos_designer"]
 AUTO_ANSWER_HOURS = 12
@@ -554,6 +631,18 @@ SHOP_ITEMS = {
 
 def short_num(n):
     suffixes = [
+        (10**60, "Dc"),
+        (10**57, "Ud"),
+        (10**54, "Tn"),
+        (10**51, "Qd"),
+        (10**48, "Qt"),
+        (10**45, "Qn"),
+        (10**42, "Td"),
+        (10**39, "Tr"),
+        (10**36, "N"),
+        (10**33, "D"),
+        (10**30, "Oc"),
+        (10**27, "No"),
         (10**24, "Sp"),
         (10**21, "Sx"),
         (10**18, "Qn"),
@@ -671,8 +760,8 @@ def get_token_remaining(user_id):
 
 def call_ai(messages, user_id):
     if is_pro_user(user_id):
-        return call_openrouter(messages, "openai/gpt-4o-mini")
-    return call_groq(messages, "llama-3.1-8b-instant")
+        return call_groq(messages, "llama-3.3-70b-versatile")
+    return call_nvidia(messages, "meta/llama-3.1-8b-instruct")
 
 
 def call_openrouter(messages, model=None):
@@ -692,6 +781,36 @@ def call_openrouter(messages, model=None):
                 "Authorization": f"Bearer {or_key}",
                 "HTTP-Referer": "https://zeroxaibot.fly.dev",
                 "X-Title": "ZeroxAI",
+            })
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8")
+            conn.close()
+            if resp.status == 429:
+                time.sleep(2 * (attempt + 1))
+                continue
+            if resp.status != 200:
+                continue
+            data = json.loads(raw)
+            return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except Exception as e:
+            time.sleep(1)
+    return call_groq(messages, "llama-3.1-8b-instant")
+
+def call_nvidia(messages, model=None):
+    nv_key = os.getenv("NVIDIA_API_KEY")
+    if not nv_key:
+        return call_groq(messages, "llama-3.1-8b-instant")
+    model_name = model or "meta/llama-3.1-8b-instruct"
+    payload = {"model": model_name, "messages": messages, "temperature": 0.55, "top_p": 0.9}
+    body = json.dumps(payload).encode("utf-8")
+    import http.client
+    for attempt in range(3):
+        try:
+            conn = http.client.HTTPSConnection("integrate.api.nvidia.com", timeout=60, context=SSL_CONTEXT)
+            conn.request("POST", "/v1/chat/completions", body=body, headers={
+                "Content-Type": "application/json", "Accept": "application/json",
+                "User-Agent": "ZeroxAI-Telegram-Bot/1.0",
+                "Authorization": f"Bearer {nv_key}",
             })
             resp = conn.getresponse()
             raw = resp.read().decode("utf-8")
@@ -1067,6 +1186,22 @@ def format_minutes_duration(minutes):
     hours = minutes // 60
     mins = minutes % 60
     return f"{hours} ч {mins} мин" if mins else f"{hours} ч"
+
+
+def format_remaining_duration(seconds):
+    total = max(0, int(seconds))
+    if total <= 0:
+        return "0 сек"
+    mins, secs = divmod(total, 60)
+    hours, mins = divmod(mins, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} ч")
+    if mins:
+        parts.append(f"{mins} мин")
+    if secs or not parts:
+        parts.append(f"{secs} сек")
+    return " ".join(parts)
 
 
 def _insecure_ctx():
@@ -3687,6 +3822,10 @@ def handle_message(token, message):
 
     if BOT_DATA.get("bot_stopped") and user_id != 6734685656:
         return
+
+    if not user.get("is_bot") and chat.get("type") != "private":
+        if check_spam_and_mute(token, chat_id, user_id, message.get("message_id")):
+            return
 
     if not user.get("is_bot"):
         increment_message_count(user_id)
