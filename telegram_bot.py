@@ -760,7 +760,7 @@ def get_token_remaining(user_id):
 
 def call_ai(messages, user_id):
     if is_pro_user(user_id):
-        return call_groq(messages, "moonshotai/kimi-k2-instruct-0905")
+        return call_groq(messages, "openai/gpt-oss-120b")
     return call_nvidia(messages, "meta/llama-3.1-8b-instruct")
 
 
