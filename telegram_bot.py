@@ -554,12 +554,26 @@ def is_pro_user(user_id):
     except Exception:
         return False
 
-def add_pro_user(user_id):
+def add_pro_user(user_id, days=30):
     try:
         with db_cursor() as cur:
-            cur.execute("INSERT INTO pro_users (user_id, expires_at) VALUES (%s, NOW() + INTERVAL '30 days') ON CONFLICT (user_id) DO UPDATE SET expires_at = NOW() + INTERVAL '30 days'", (user_id,))
+            cur.execute("INSERT INTO pro_users (user_id, expires_at) VALUES (%s, NOW() + make_interval(days => %s)) ON CONFLICT (user_id) DO UPDATE SET expires_at = NOW() + make_interval(days => %s)", (user_id, days, days))
     except Exception as e:
         print(f"add_pro_user({user_id}) error: {e}", file=sys.stderr)
+
+def set_pro_user(user_id, interval_sql):
+    try:
+        with db_cursor() as cur:
+            cur.execute(f"INSERT INTO pro_users (user_id, expires_at) VALUES (%s, NOW() + {interval_sql}) ON CONFLICT (user_id) DO UPDATE SET expires_at = NOW() + {interval_sql}", (user_id,))
+    except Exception as e:
+        print(f"set_pro_user({user_id}) error: {e}", file=sys.stderr)
+
+def remove_pro_user(user_id):
+    try:
+        with db_cursor() as cur:
+            cur.execute("DELETE FROM pro_users WHERE user_id = %s", (user_id,))
+    except Exception as e:
+        print(f"remove_pro_user({user_id}) error: {e}", file=sys.stderr)
 
 def get_luck(user_id):
     try:
@@ -1862,7 +1876,7 @@ KNOWN_COMMANDS = {
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
     "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
     "/hide", "/savehistory", "/answer",
-    "/giveall", "/addcoin", "/testshop", "/logs",
+    "/giveall", "/addcoin", "/testshop", "/logs", "/setsub",
 }
 
 def should_respond(message):
@@ -2041,6 +2055,49 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 count = sum(len(h) // 2 for h in USER_HISTORIES.values())
                 save_histories_to_db()
                 reply(f"\U0001F4BE Сохранено {count} диалогов из памяти в БД.")
+                return True
+
+            if cmd == "/setsub":
+                if len(args) < 2:
+                    reply("Использование: /setsub @username <30д/1ч/7д> pro/free")
+                    return True
+                target_ref = parse_user_ref(message, args)
+                if not target_ref:
+                    reply("Ответьте на сообщение или укажите @username/ID.")
+                    return True
+                tid = target_ref if isinstance(target_ref, int) else resolve_username(token, target_ref, chat_id)
+                if not tid:
+                    reply("Пользователь не найден. Попросите его написать боту любое сообщение, затем повторите.")
+                    return True
+                duration_str = args[1]
+                sub_type = "pro"
+                if len(args) >= 3:
+                    sub_type = args[2].lower()
+                if sub_type == "free":
+                    remove_pro_user(tid)
+                    reply(f"\u2705 Подписка пользователя удалена (free).")
+                    return True
+                m = re.match(r"^(\d+)\s*(ч|h|д|d|м|m)$", duration_str)
+                if not m:
+                    reply("Неверный формат времени. Пример: 30д, 1ч, 7д")
+                    return True
+                amount = int(m.group(1))
+                unit = m.group(2)
+                if unit in ("ч", "h"):
+                    interval = f"INTERVAL '{amount} hours'"
+                    label = f"{amount}ч"
+                elif unit in ("д", "d"):
+                    interval = f"INTERVAL '{amount} days'"
+                    label = f"{amount}д"
+                elif unit in ("м", "m"):
+                    interval = f"INTERVAL '{amount} minutes'"
+                    label = f"{amount}м"
+                if amount <= 0:
+                    remove_pro_user(tid)
+                    reply(f"\u2705 Подписка пользователя удалена (free).")
+                    return True
+                set_pro_user(tid, interval)
+                reply(f"\U0001F4E1 Выдана подписка <b>PRO</b> на {label}.")
                 return True
 
             if cmd == "/hide":
