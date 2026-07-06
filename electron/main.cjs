@@ -1,47 +1,44 @@
 const { app, BrowserWindow } = require('electron');
 const { spawn } = require('node:child_process');
-const { join, dirname } = require('node:path');
+const { join } = require('node:path');
 const { existsSync, readFileSync } = require('node:fs');
 const http = require('node:http');
 
 const ROOT = join(__dirname, '..');
-const BOT_DIR = existsSync(join(ROOT, 'ZeroxAiApp', 'telegram_bot.py'))
-  ? join(ROOT, 'ZeroxAiApp')
-  : join(process.resourcesPath, 'ZeroxAiApp');
-const PORT = 8080;
+const BOT_DIR = join(ROOT, 'ZeroxAiApp');
+const LOCAL_PORT = 8080;
 
-function loadDotEnv() {
+function loadEnv() {
   const envPath = join(BOT_DIR, '.env');
   if (!existsSync(envPath)) return;
-  const content = readFileSync(envPath, 'utf8');
-  for (const line of content.split(/\r?\n/)) {
+  for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
     const t = line.trim();
     if (!t || t.startsWith('#') || !t.includes('=')) continue;
     const i = t.indexOf('=');
-    const name = t.slice(0, i).trim();
-    const value = t.slice(i + 1).trim().replace(/^["']|["']$/g, '');
-    if (name && process.env[name] === undefined) process.env[name] = value;
+    const k = t.slice(0, i).trim();
+    const v = t.slice(i + 1).trim().replace(/^["']|["']$/g, '');
+    if (k && process.env[k] === undefined) process.env[k] = v;
   }
 }
+loadEnv();
 
-loadDotEnv();
+const RAILWAY_URL = process.env.RAILWAY_PUBLIC_DOMAIN
+  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+  : null;
 
 let botProcess = null;
 
-function startBot() {
+function startLocalBot() {
   return new Promise((resolve) => {
-    botProcess = spawn(process.platform === 'win32' ? 'python' : 'python3', ['-u', 'telegram_bot.py'], {
+    botProcess = spawn('python', ['-u', 'telegram_bot.py'], {
       cwd: BOT_DIR,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
     });
     botProcess.stdout.on('data', (d) => process.stdout.write(`[bot] ${d}`));
     botProcess.stderr.on('data', (d) => process.stderr.write(`[bot-err] ${d}`));
-    botProcess.on('exit', (code) => console.log(`Bot exited with code ${code}`));
-
-    // wait for server to be ready
     const check = () => {
-      const req = http.get(`http://127.0.0.1:${PORT}/health`, (res) => {
+      const req = http.get(`http://127.0.0.1:${LOCAL_PORT}/health`, (res) => {
         if (res.statusCode === 200) resolve();
         else setTimeout(check, 500);
       });
@@ -52,11 +49,17 @@ function startBot() {
 }
 
 app.whenReady().then(async () => {
-  await startBot();
-  createWindow();
-});
+  let url;
 
-function createWindow() {
+  // try Railway first
+  if (RAILWAY_URL) {
+    url = RAILWAY_URL;
+  } else {
+    // fallback: start local bot
+    await startLocalBot();
+    url = `http://127.0.0.1:${LOCAL_PORT}`;
+  }
+
   const win = new BrowserWindow({
     width: 1280, height: 800,
     minWidth: 800, minHeight: 600,
@@ -66,20 +69,15 @@ function createWindow() {
       preload: join(__dirname, 'preload.js'),
     },
   });
-  win.loadURL(`http://127.0.0.1:${PORT}`);
-  // remove menu bar for cleaner look
+  win.loadURL(url);
   win.setMenuBarVisibility(false);
-}
+});
 
 app.on('window-all-closed', () => {
   if (botProcess) botProcess.kill();
   if (process.platform !== 'darwin') app.quit();
 });
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
-});
-
+app.on('activate', () => {});
 app.on('before-quit', () => {
   if (botProcess) botProcess.kill();
 });
