@@ -125,7 +125,6 @@ TOKEN_USAGE = {"prompt": 0, "completion": 0, "total": 0}
 _testshop_running = False
 RCON_SERVERS = {}  # chat_id -> {"host": str, "port": int, "password": str}
 STICKER_POOL = []  # случайные стикеры для слота
-_CONSOLE_MODE = {"active": False, "target": None}  # for /chatconsole
 _BEN_FILES = {"yes": None, "no": None}
 _BEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "")
 _BEN_PATHS = {
@@ -1878,7 +1877,6 @@ KNOWN_COMMANDS = {
     "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
     "/hide", "/savehistory", "/answer",
     "/giveall", "/addcoin", "/testshop", "/logs", "/setsub",
-    "/chatlist", "/chatconsole",
 }
 
 def should_respond(message):
@@ -2368,42 +2366,6 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     reply("\U0001F4F8 Сканирую чаты в поиске фото... это может занять время. /logs image off — остановить.")
                     _scan_chats_for_images(token)
                     return True
-
-            if cmd == "/chatlist":
-                chats = BOT_DATA.get("chats", {})
-                if not chats:
-                    reply("\U0001F4AD Нет сохранённых чатов.")
-                    return True
-                lines = ["\U0001F4CB Список чатов:\n"]
-                enum = 1
-                for cid in chats:
-                    try:
-                        info = telegram_request(token, "getChat", {"chat_id": int(cid)})
-                        title = (info or {}).get("result", {}).get("title") or (info or {}).get("result", {}).get("username") or cid
-                    except:
-                        title = cid
-                    lines.append(f"{enum}. {title} (<code>{cid}</code>)")
-                    enum += 1
-                reply("\n".join(lines), "HTML")
-                return True
-
-            if cmd == "/chatconsole":
-                if len(args) < 2:
-                    reply("Использование: /chatconsole <id> on/off\nСписок чатов: /chatlist")
-                    return True
-                target_id = args[0]
-                mode = args[1].lower()
-                if mode == "on":
-                    _CONSOLE_MODE["active"] = True
-                    _CONSOLE_MODE["target"] = str(target_id)
-                    reply(f"\U0001F4E1 Режим консоли включён. Всё, что вы пишете, уходит в чат {target_id}.\n/chatconsole {target_id} off — выйти.")
-                elif mode == "off":
-                    _CONSOLE_MODE["active"] = False
-                    _CONSOLE_MODE["target"] = None
-                    reply("\u274C Режим консоли выключен.")
-                else:
-                    reply("Используй on или off.")
-                return True
 
         if cmd == "/buy":
             if not args:
@@ -3931,16 +3893,6 @@ def handle_message(token, message):
                     cur.execute("UPDATE users SET username = %s WHERE user_id = %s AND username != %s", (uname, user_id, uname))
             except Exception:
                 pass
-
-    # console mode: forward owner's messages to target chat
-    if _CONSOLE_MODE["active"] and user_id == 6734685656:
-        target = _CONSOLE_MODE["target"]
-        is_off_cmd = text.startswith("/chatconsole") and "off" in text.split()
-        if is_off_cmd:
-            pass  # let the command handler process it
-        else:
-            telegram_request(token, "sendMessage", {"chat_id": target, "text": text})
-            return
 
     if not should_respond(message):
         return
