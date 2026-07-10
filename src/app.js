@@ -179,7 +179,15 @@ function renderMessages() {
 
     const avatar = document.createElement('div');
     avatar.className = 'avatar ' + (msg.role === 'user' ? 'user-avatar' : 'ai-avatar');
-    avatar.textContent = msg.role === 'user' ? (state.settings.profileName[0] || 'U') : 'Z';
+    if (msg.role === 'user') {
+      avatar.textContent = state.settings.profileName[0] || 'U';
+    } else {
+      const img = document.createElement('img');
+      img.src = 'assets/ZeroxAiLogo.png';
+      img.alt = 'ZeroxAI';
+      img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:50%;filter:none';
+      avatar.appendChild(img);
+    }
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';

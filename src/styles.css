@@ -84,7 +84,6 @@ body {
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  filter: grayscale(1);
 }
 
 .brand-name {
@@ -323,7 +322,7 @@ body {
 
 .message.user .bubble {
   background: var(--user-bubble);
-  border: 1px solid var(--border);
+  border: none;
 }
 
 .message.assistant .bubble {
@@ -463,7 +462,6 @@ body {
   height: 120px;
   object-fit: contain;
   border-radius: 12px;
-  filter: grayscale(1);
 }
 
 .thinking-label {
@@ -691,7 +689,6 @@ body {
   height: 48px;
   margin-bottom: 16px;
   border-radius: 12px;
-  filter: grayscale(1);
 }
 
 .welcome h2 {
