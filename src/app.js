@@ -156,7 +156,7 @@ function renderMessages() {
 
   if (!chat || !chat.messages.length) {
     el.messages.innerHTML = `<div class="welcome">
-      <img src="assets/logo.svg" alt="" class="welcome-logo" />
+      <img src="assets/ZeroxAiLogo.png" alt="" class="welcome-logo" />
       <h2>\u0427\u0435\u043C \u043C\u043E\u0433\u0443 \u043F\u043E\u043C\u043E\u0447\u044C?</h2>
       <p>\u042F ZeroxAI \u2014 \u043C\u043D\u043E\u0433\u043E\u0444\u0443\u043D\u043A\u0446\u0438\u043E\u043D\u0430\u043B\u044C\u043D\u044B\u0439 AI-\u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043D\u0442</p>
       <div class="welcome-suggestions">
@@ -301,7 +301,9 @@ async function requestAI(text) {
     throw new Error(detail || `HTTP ${resp.status}`);
   }
   const data = await resp.json();
-  return (data.response || data.content || data.message?.content || '').trim() || '\u041F\u0443\u0441\u0442\u043E\u0439 \u043E\u0442\u0432\u0435\u0442';
+  let answer = (data.response || data.content || data.message?.content || '').trim() || '\u041F\u0443\u0441\u0442\u043E\u0439 \u043E\u0442\u0432\u0435\u0442';
+  answer = answer.replace(/^```(?:json|markdown|text)?\s*\n?/i, '').replace(/\n?```\s*$/, '');
+  return answer;
 }
 
 function fillSettings() {
