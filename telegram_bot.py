@@ -526,6 +526,12 @@ def init_db():
                 """)
         except Exception:
             pass
+        # add thinking_sticker column (migration)
+        try:
+            with db_cursor() as cur:
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS thinking_sticker TEXT")
+        except Exception:
+            pass
         print("Database initialized successfully.", flush=True)
     except Exception as e:
         print(f"Failed to initialize database: {e}", file=sys.stderr)
@@ -2236,6 +2242,13 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 reply(f"\U0001F512 '{feature}' {status}.")
                 return True
 
+            if cmd == "/setwebhook":
+                if set_webhook(token):
+                    reply("\u2705 Webhook переустановлен.")
+                else:
+                    reply("\u274C Не удалось установить webhook (бота нет на Railway/Fly/Render).")
+                return True
+
             if cmd == "/stopcasino":
                 BOT_DATA["casino_disabled"] = True
                 save_data()
@@ -3289,6 +3302,25 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             reply(f"\u2705 Стикер добавлен в пул ({len(STICKER_POOL)} шт.)")
             return True
 
+        if cmd == "/setthinking":
+            reply_msg = message.get("reply_to_message")
+            if reply_msg and reply_msg.get("sticker"):
+                fid = reply_msg["sticker"]["file_id"]
+            elif args:
+                fid = args[0]
+            else:
+                reply("Ответьте на стикер или отправьте file_id.")
+                return True
+            try:
+                with db_cursor() as cur:
+                    cur.execute("UPDATE users SET thinking_sticker = %s WHERE user_id = %s", (fid, user_id))
+                    if cur.rowcount == 0:
+                        cur.execute("INSERT INTO users (user_id, thinking_sticker) VALUES (%s, %s)", (user_id, fid))
+                reply(f"\u2705 Стикер «думаю» сохран\u0451н!")
+            except Exception as e:
+                reply(f"\u274C Ошибка: {e}")
+            return True
+
         if cmd == "/report":
             target = parse_user_ref(message, args)
             reason = cmd_text
@@ -4067,8 +4099,20 @@ def handle_message(token, message):
 
     think_msg_id = None
     try:
-        png_bytes = _make_thinking_png()
-        r = telegram_upload(token, "sendSticker", {"chat_id": chat_id}, "sticker", png_bytes, "thinking.png", "image/png")
+        custom_fid = None
+        try:
+            with db_cursor() as cur:
+                cur.execute("SELECT thinking_sticker FROM users WHERE user_id = %s", (user_id,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    custom_fid = row[0]
+        except:
+            pass
+        if custom_fid:
+            r = telegram_request(token, "sendSticker", {"chat_id": chat_id, "sticker": custom_fid})
+        else:
+            png_bytes = _make_thinking_png()
+            r = telegram_upload(token, "sendSticker", {"chat_id": chat_id}, "sticker", png_bytes, "thinking.png", "image/png")
         if r.get("ok"):
             think_msg_id = r["result"]["message_id"]
     except:
