@@ -4036,32 +4036,9 @@ def handle_message(token, message):
         return
 
     lang = detect_lang(text)
-    frames_map = {
-        "ru": ["\U0001F914 Думает...", "\U0001F914 Думает..", "\U0001F914 Думает."],
-        "en": ["\U0001F914 Thinking...", "\U0001F914 Thinking..", "\U0001F914 Thinking."],
-        "arm": ["\U0001F914 Մտածում է...", "\U0001F914 Մտածում է..", "\U0001F914 Մտածում է."],
-    }
-    frames = frames_map.get(lang, frames_map["ru"])
-    think_result = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": frames[0]})
+    thinking_text = {"ru": "\U0001F914 Думает...", "en": "\U0001F914 Thinking...", "arm": "\U0001F914 Մտածում է..."}.get(lang, "\U0001F914 Думает...")
+    think_result = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": thinking_text})
     think_msg_id = think_result.get("result", {}).get("message_id")
-    if think_msg_id:
-        import threading as _th
-        _anim_stop = _th.Event()
-        def _think_anim():
-            import time as _t
-            while not _anim_stop.is_set():
-                for fr in frames:
-                    if _anim_stop.is_set():
-                        return
-                    _t.sleep(0.4)
-                    if _anim_stop.is_set():
-                        return
-                    try:
-                        edit_message(token, chat_id, think_msg_id, fr)
-                    except:
-                        pass
-        _anim_thread = _th.Thread(target=_think_anim, daemon=True)
-        _anim_thread.start()
 
     try:
         answer = call_ai(build_messages(chat_id, text, user.get("username"), user.get("first_name"), user_id), user_id)
@@ -4076,8 +4053,6 @@ def handle_message(token, message):
             except:
                 pass
         if think_msg_id:
-            _anim_stop.set()
-            _anim_thread.join(timeout=0.5)
             telegram_request(token, "deleteMessage", {"chat_id": chat_id, "message_id": think_msg_id})
             first_msg_id = None
             for chunk in split_message(answer):
@@ -4108,10 +4083,6 @@ def handle_message(token, message):
         import traceback
         traceback.print_exc()
         if think_msg_id:
-            try:
-                _anim_stop.set()
-            except:
-                pass
             try:
                 edit_message(token, chat_id, think_msg_id, f"\u274C Ошибка: {e}")
             except:
