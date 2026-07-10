@@ -17,7 +17,7 @@ function makeMd() {
       }
     });
   } catch {
-    return { render: t => '<div class="code-header"><span>code</span><button class="copy-code-btn" onclick="copyCode(this)">\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C</button></div><pre><code>' + t.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c]) + '</code></pre>' };
+    return { render: t => '<pre>' + t.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c]) + '</pre>' };
   }
 }
 const md = makeMd();
@@ -364,6 +364,7 @@ window.copyCode = function(btn) {
     if (/^[📁📂📄📝🔧⚙️]/.test(t)) return false;
     if (/^---+\s*$/.test(t)) return false;
     if (i === 0 && /^(php|python|javascript|java|typescript|yaml|yml|json|xml|html|css|bash|sh|sql|rust|go|cpp|csharp|c)$/i.test(t)) return false;
+    if (/^\/[A-Za-z]/.test(t)) return false;
     return true;
   });
   text = codeLines.join('\n').trim();
