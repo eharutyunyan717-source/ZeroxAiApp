@@ -30,7 +30,6 @@ ACTIVE_KEY_INDEX = 0
 TOKEN_LIMIT = 100000
 _LOCAL_PRO_MODE = False
 _LOCAL_MODEL_NAME = "qwen2.5-coder:14b-instruct"
-_THINK_STICKER_ID = None
 _GEMINI_LAST_CALL = 0
 _GEMINI_LOCK = threading.Lock()
 USER_HISTORIES = {}
@@ -1342,33 +1341,23 @@ def telegram_upload(token, method, fields, file_field, file_bytes, filename, con
             raise
 
 
-def _generate_thinking_sticker(token, user_id):
-    global _THINK_STICKER_ID
-    if _THINK_STICKER_ID:
-        return _THINK_STICKER_ID
+def _make_thinking_png():
     from PIL import Image, ImageDraw
-    try:
-        img = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        draw.ellipse([56, 56, 456, 456], fill=(200, 220, 255, 240))
-        draw.ellipse([66, 66, 446, 446], fill=(180, 210, 255, 255))
-        dot_radius = 24
-        dot_y = 256
-        spacing = 80
-        start_x = 256 - spacing
-        for i in range(3):
-            x = start_x + i * spacing
-            draw.ellipse([x - dot_radius, dot_y - dot_radius, x + dot_radius, dot_y + dot_radius], fill=(60, 100, 180, 255))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-        r = telegram_upload(token, "uploadStickerFile", {"user_id": user_id, "sticker_format": "static"}, "sticker", buf.read(), "thinking.png", "image/png")
-        if r.get("ok"):
-            _THINK_STICKER_ID = r["result"]["file_id"]
-            return _THINK_STICKER_ID
-    except:
-        pass
-    return None
+    img = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([56, 56, 456, 456], fill=(200, 220, 255, 240))
+    draw.ellipse([66, 66, 446, 446], fill=(180, 210, 255, 255))
+    dot_radius = 24
+    dot_y = 256
+    spacing = 80
+    start_x = 256 - spacing
+    for i in range(3):
+        x = start_x + i * spacing
+        draw.ellipse([x - dot_radius, dot_y - dot_radius, x + dot_radius, dot_y + dot_radius], fill=(60, 100, 180, 255))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf.read()
 
 def send_message(token, chat_id, text, reply_markup=None, parse_mode=None):
     chunks = split_message(text)
@@ -4065,20 +4054,15 @@ def handle_message(token, message):
         return
 
     think_msg_id = None
-    if _THINK_STICKER_ID:
-        r = telegram_request(token, "sendSticker", {"chat_id": chat_id, "sticker": _THINK_STICKER_ID})
+    try:
+        png_bytes = _make_thinking_png()
+        r = telegram_upload(token, "sendPhoto", {"chat_id": chat_id}, "photo", png_bytes, "thinking.png", "image/png")
         if r.get("ok"):
             think_msg_id = r["result"]["message_id"]
-    else:
-        _generate_thinking_sticker(token, user_id)
-        if _THINK_STICKER_ID:
-            r = telegram_request(token, "sendSticker", {"chat_id": chat_id, "sticker": _THINK_STICKER_ID})
-            if r.get("ok"):
-                think_msg_id = r["result"]["message_id"]
-        else:
-            r = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": ". . ."})
-            if r.get("ok"):
-                think_msg_id = r["result"]["message_id"]
+    except:
+        r = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": ". . ."})
+        if r.get("ok"):
+            think_msg_id = r["result"]["message_id"]
 
     try:
         answer = call_ai(build_messages(chat_id, text, user.get("username"), user.get("first_name"), user_id), user_id)
@@ -4257,12 +4241,6 @@ def main():
         except Exception as e:
             print(f"Failed to connect to Telegram API: {e}, retrying in 10s...")
         time.sleep(10)
-
-    # pre-generate thinking sticker (use OWNER_ID since bot can't upload for itself pre-chat)
-    try:
-        _generate_thinking_sticker(token, OWNER_ID)
-    except:
-        pass
 
     # send recent conversations to owner on startup
     try:
