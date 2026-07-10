@@ -496,6 +496,7 @@ body {
   resize: none;
   outline: none;
   max-height: 200px;
+  min-height: 52px;
   font-family: inherit;
 }
 
