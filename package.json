@@ -1,20 +1,14 @@
 {
   "name": "zeroxai",
   "version": "1.0.0",
-  "description": "ZeroxAI Telegram Desktop Client",
+  "description": "ZeroxAI — современный AI-ассистент",
   "main": "electron/main.cjs",
   "private": true,
-  "type": "module",
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "build": "electron-builder",
-    "electron:build": "electron-builder"
+    "build": "electron-builder"
   },
-  "keywords": [
-    "telegram",
-    "zeroxai"
-  ],
   "author": "ZeroxAI",
   "license": "UNLICENSED",
   "devDependencies": {
@@ -23,28 +17,35 @@
   },
   "build": {
     "appId": "com.zeroxai.desktop",
-    "productName": "ZeroxAI Telegram",
+    "productName": "ZeroxAI",
+    "artifactName": "ZeroxSetup-${version}.${ext}",
     "directories": {
       "output": "dist_electron"
     },
     "files": [
       "electron/**",
-      "package.json",
-      ".env"
-    ],
-    "extraResources": [
-      {
-        "from": "ZeroxAiApp",
-        "to": "ZeroxAiApp",
-        "filter": [
-          "**/*"
-        ]
-      }
+      "index.html",
+      "src/**",
+      "assets/**",
+      "Animations/**",
+      "package.json"
     ],
     "win": {
       "target": [
-        "portable"
-      ]
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/logo.svg"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ZeroxAI",
+      "artifactName": "ZeroxSetup-${version}.${ext}"
     }
   }
 }

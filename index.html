@@ -127,6 +127,12 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/14.1.0/markdown-it.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script type="module" src="src/app.js"></script>
+  <script>
+    if (document.documentElement.dataset.theme !== 'dark' && document.documentElement.dataset.theme !== 'light') {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      document.documentElement.dataset.theme = mq.matches ? 'dark' : 'light';
+    }
+  </script>
+  <script src="src/app.js"></script>
 </body>
 </html>

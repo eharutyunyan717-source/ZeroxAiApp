@@ -14,11 +14,13 @@ const md = window.markdownit({
   }
 });
 
+const IS_ELECTRON = navigator.userAgent.toLowerCase().includes('electron') || window.electronAPI?.isElectron;
+const DEFAULT_ENDPOINT = IS_ELECTRON ? 'https://artistic-happiness-production.up.railway.app/api/chat' : '/api/chat';
 const STORAGE_KEY = 'zeroxai.v3';
 const DEFAULT_SETTINGS = {
   profileName: '\u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C',
   theme: 'system',
-  apiEndpoint: '/api/chat',
+  apiEndpoint: DEFAULT_ENDPOINT,
   modelName: 'openai/gpt-oss-120b',
   apiKey: '',
   thinkingAnim: true,
