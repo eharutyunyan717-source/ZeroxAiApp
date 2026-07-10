@@ -1961,6 +1961,7 @@ KNOWN_COMMANDS = {
     "/hide", "/savehistory", "/answer",
     "/giveall", "/addcoin", "/testshop", "/logs", "/setsub",
     "/setlocalmodel", "/trainmodel",
+    "/setthinking", "/setwebhook",
 }
 
 def should_respond(message):
