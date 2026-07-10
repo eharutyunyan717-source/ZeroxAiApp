@@ -511,10 +511,41 @@ def init_db():
                 """)
         except Exception:
             pass
+        # create heartbeat table for local bot failover
+        try:
+            with db_cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS heartbeat (
+                        id INT PRIMARY KEY DEFAULT 1,
+                        last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    INSERT INTO heartbeat (id, last_seen) VALUES (1, NOW())
+                    ON CONFLICT (id) DO NOTHING
+                """)
+        except Exception:
+            pass
         print("Database initialized successfully.", flush=True)
     except Exception as e:
         print(f"Failed to initialize database: {e}", file=sys.stderr)
         DB_POOL = None
+
+def _heartbeat_write():
+    try:
+        with db_cursor() as cur:
+            cur.execute("UPDATE heartbeat SET last_seen = NOW() WHERE id = 1")
+    except:
+        pass
+
+def _local_bot_alive():
+    try:
+        with db_cursor() as cur:
+            cur.execute("SELECT EXTRACT(EPOCH FROM (NOW() - last_seen)) FROM heartbeat WHERE id = 1")
+            row = cur.fetchone()
+            return row is not None and row[0] is not None and row[0] < 90
+    except:
+        return False
 
 class db_cursor:
     def __enter__(self):
@@ -4202,6 +4233,10 @@ def main():
 
     while True:
         try:
+            if _local_bot_alive():
+                print("Local bot is alive — Railway standby. Checking again in 60s...", flush=True)
+                time.sleep(60)
+                continue
             if set_webhook(token):
                 port = int(os.getenv("PORT", "8080"))
                 server = ThreadingHTTPServer(("0.0.0.0", port), webhook_handler_factory(token))
@@ -4220,9 +4255,16 @@ def _run_polling_bot(token):
     global BOT_ID, BOT_USERNAME
 
     offset = 0
+    last_hb = 0
+    # delete any webhook so polling gets updates
+    telegram_request(token, "deleteWebhook")
 
     while True:
         try:
+            now = time.time()
+            if now - last_hb > 25:
+                _heartbeat_write()
+                last_hb = now
             updates = telegram_request(token, "getUpdates", {"offset": offset, "timeout": 10}).get("result", [])
             for update in updates:
                 offset = max(offset, update["update_id"] + 1)
