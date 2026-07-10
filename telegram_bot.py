@@ -1363,37 +1363,6 @@ def detect_lang(text):
     return "en"
 
 
-def send_thinking_and_answer(token, chat_id, answer, lang="ru"):
-    frames_map = {
-        "ru": ["\U0001F914 Думает...", "\U0001F914 Думает..", "\U0001F914 Думает."],
-        "en": ["\U0001F914 Thinking...", "\U0001F914 Thinking..", "\U0001F914 Thinking."],
-        "arm": ["\U0001F914 Մտածում է...", "\U0001F914 Մտածում է..", "\U0001F914 Մտածում է."],
-    }
-    frames = frames_map.get(lang, frames_map["ru"])
-    result = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": frames[0]})
-    msg_id = result.get("result", {}).get("message_id")
-    if not msg_id:
-        send_message(token, chat_id, answer, parse_mode="HTML")
-        return None
-    import time as time_module
-    for frame in frames[1:]:
-        time_module.sleep(0.7)
-        try:
-            edit_message(token, chat_id, msg_id, frame)
-        except Exception:
-            pass
-    time_module.sleep(0.3)
-    chunks = split_message(answer)
-    try:
-        edit_message(token, chat_id, msg_id, chunks[0], parse_mode="HTML")
-    except Exception:
-        send_message(token, chat_id, answer, parse_mode="HTML")
-        return None
-    for chunk in chunks[1:]:
-        send_message(token, chat_id, chunk, parse_mode="HTML")
-    return msg_id
-
-
 def split_message(text):
     text = text or "Пустой ответ от модели."
     return [text[index:index + MAX_TELEGRAM_MESSAGE] for index in range(0, len(text), MAX_TELEGRAM_MESSAGE)]
@@ -4035,10 +4004,7 @@ def handle_message(token, message):
             f"Подождите восстановления или купите Pro: /buypro", message.get("message_id"), reply_markup=km)
         return
 
-    lang = detect_lang(text)
-    thinking_text = {"ru": "\U0001F914 Думает...", "en": "\U0001F914 Thinking...", "arm": "\U0001F914 Մտածում է..."}.get(lang, "\U0001F914 Думает...")
-    think_result = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": thinking_text})
-    think_msg_id = think_result.get("result", {}).get("message_id")
+    telegram_request(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
 
     try:
         answer = call_ai(build_messages(chat_id, text, user.get("username"), user.get("first_name"), user_id), user_id)
@@ -4052,17 +4018,12 @@ def handle_message(token, message):
                         answer = answer.replace(f"@{own_uname}", f"@{sender_uname}")
             except:
                 pass
-        if think_msg_id:
-            telegram_request(token, "deleteMessage", {"chat_id": chat_id, "message_id": think_msg_id})
-            first_msg_id = None
-            for chunk in split_message(answer):
-                r = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True})
-                if first_msg_id is None and r.get("ok"):
-                    first_msg_id = r.get("result", {}).get("message_id")
-            answer_msg_id = first_msg_id or think_msg_id
-        else:
-            send_message(token, chat_id, answer)
-            answer_msg_id = None
+        first_msg_id = None
+        for chunk in split_message(answer):
+            r = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True})
+            if first_msg_id is None and r.get("ok"):
+                first_msg_id = r.get("result", {}).get("message_id")
+        answer_msg_id = first_msg_id
 
         remember(chat_id, text, answer)
 
@@ -4082,11 +4043,6 @@ def handle_message(token, message):
         print(f"Error in AI chat handler: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
-        if think_msg_id:
-            try:
-                edit_message(token, chat_id, think_msg_id, f"\u274C Ошибка: {e}")
-            except:
-                pass
         reply_message(token, chat_id, f"\u274C Ошибка: {e}", message.get("message_id"))
 
     # persist menu keyboard
