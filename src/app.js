@@ -17,7 +17,7 @@ function makeMd() {
       }
     });
   } catch {
-    return { render: t => '<pre>' + t.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c]) + '</pre>' };
+    return { render: t => '<div class="code-header"><span>code</span><button class="copy-code-btn" onclick="copyCode(this)">\u{1F4CB} \u0412\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u0432 \u0447\u0430\u0442</button></div><pre><code>' + t.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c]) + '</code></pre>' };
   }
 }
 const md = makeMd();
