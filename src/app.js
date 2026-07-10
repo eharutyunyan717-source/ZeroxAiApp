@@ -354,12 +354,25 @@ window.copyCode = function(btn) {
   const pre = btn.closest('.code-header').nextElementSibling;
   const code = pre?.querySelector('code');
   if (!code) return;
-  navigator.clipboard.writeText(code.textContent).then(() => {
+  let text = code.textContent;
+  // extract only actual code lines, skip file structure/descriptions
+  const lines = text.split('\n');
+  const codeLines = lines.filter((line, i) => {
+    const t = line.trim();
+    if (!t) return false;
+    if (/^[─├└│▲▼]/.test(t)) return false;
+    if (/^[📁📂📄📝🔧⚙️]/.test(t)) return false;
+    if (/^---+\s*$/.test(t)) return false;
+    if (i === 0 && /^(php|python|javascript|java|typescript|yaml|yml|json|xml|html|css|bash|sh|sql|rust|go|cpp|csharp|c)$/i.test(t)) return false;
+    return true;
+  });
+  text = codeLines.join('\n').trim();
+  navigator.clipboard.writeText(text).then(() => {
     btn.textContent = '\u2705 \u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u043E';
     setTimeout(() => { btn.textContent = '\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C'; }, 1500);
   }).catch(() => {
     const ta = document.createElement('textarea');
-    ta.value = code.textContent;
+    ta.value = text;
     ta.style.position = 'fixed'; ta.style.left = '-9999px';
     document.body.appendChild(ta); ta.select();
     document.execCommand('copy');
