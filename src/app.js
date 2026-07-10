@@ -13,7 +13,7 @@ function makeMd() {
             highlighted = window.markdownit().utils.escapeHtml(str);
           }
         } catch { highlighted = str.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c]); }
-        return '<div class="code-header"><span>' + (lang || 'code') + '</span><button class="copy-code-btn" onclick="copyCode(this)">\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C</button></div><pre><code' + langAttr + '>' + highlighted + '</code></pre>';
+        return '<div class="code-header"><span>' + (lang || 'code') + '</span><button class="copy-code-btn" onclick="copyCode(this)">\u{1F4CB} \u0412\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u0432 \u0447\u0430\u0442</button></div><pre><code' + langAttr + '>' + highlighted + '</code></pre>';
       }
     });
   } catch {
@@ -354,10 +354,13 @@ window.copyCode = function(btn) {
   const pre = btn.closest('.code-header').nextElementSibling;
   const code = pre?.querySelector('code');
   if (!code) return;
-  navigator.clipboard.writeText(code.textContent).then(() => {
-    btn.textContent = '\u2705 \u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u043E';
-    setTimeout(() => { btn.textContent = '\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C'; }, 1500);
-  });
+  const text = code.textContent;
+  el.input.value = text;
+  el.input.focus();
+  resizeInput();
+  el.sendBtn.disabled = false;
+  btn.textContent = '\u2705 Вставлено';
+  setTimeout(() => { btn.textContent = '\u{1F4CB} Вставить в чат'; }, 2000);
 };
 
 function bind() {
