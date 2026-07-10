@@ -4056,7 +4056,7 @@ def handle_message(token, message):
     think_msg_id = None
     try:
         png_bytes = _make_thinking_png()
-        r = telegram_upload(token, "sendPhoto", {"chat_id": chat_id}, "photo", png_bytes, "thinking.png", "image/png")
+        r = telegram_upload(token, "sendSticker", {"chat_id": chat_id}, "sticker", png_bytes, "thinking.png", "image/png")
         if r.get("ok"):
             think_msg_id = r["result"]["message_id"]
     except:
