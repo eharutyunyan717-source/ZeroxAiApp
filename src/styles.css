@@ -369,6 +369,7 @@ body {
   overflow-wrap: break-word;
   overflow: hidden;
   min-width: 0;
+  border: none;
 }
 
 .message.user .bubble { border-top-right-radius: 4px; }
@@ -588,18 +589,18 @@ body {
 .field input,
 .field select {
   padding: 10px 12px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius);
-  background: var(--bg);
+  background: var(--sidebar-hover);
   color: var(--text);
   font-size: 14px;
   outline: none;
-  transition: border-color 0.15s ease;
+  transition: background 0.15s ease;
 }
 
 .field input:focus,
 .field select:focus {
-  border-color: var(--text-muted);
+  background: var(--sidebar-active);
 }
 
 .theme-selector {
@@ -608,7 +609,7 @@ body {
   padding: 4px;
   background: var(--sidebar-bg);
   border-radius: var(--radius);
-  border: 1px solid var(--border);
+  border: none;
 }
 
 .theme-selector button {
@@ -652,7 +653,7 @@ body {
 
 .save-btn {
   padding: 10px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius);
   background: var(--text);
   color: var(--bg);
@@ -712,18 +713,17 @@ body {
 
 .welcome-suggestions button {
   padding: 10px 16px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 20px;
-  background: var(--bg);
+  background: var(--sidebar-hover);
   color: var(--text);
   cursor: pointer;
   font-size: 13px;
-  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  transition: background 0.15s ease, transform 0.15s ease;
 }
 
 .welcome-suggestions button:hover {
-  background: var(--sidebar-bg);
-  border-color: var(--text-muted);
+  background: var(--sidebar-active);
   transform: scale(1.02);
 }
 
