@@ -1737,7 +1737,35 @@ def parse_code_blocks(text):
 
 
 def has_code_blocks(text):
-    return bool(re.search(r"```", text))
+    if "```" not in text:
+        return False
+    blocks = parse_code_blocks(text)
+    if not blocks:
+        return False
+    for lang, filename, code in blocks:
+        if lang:
+            return True
+        if not code or len(code) < 10:
+            continue
+        if re.search(r"[{}();\[\]<>]|\b(function|class|def|if|for|while|import|echo|return|<?php)\b", code):
+            return True
+    return False
+
+
+def unwrap_text_backticks(text):
+    text = text.strip()
+    if text.startswith("```") and text.endswith("```"):
+        inner = text[3:-3].strip()
+        first_nl = inner.find("\n")
+        if first_nl == -1:
+            return inner
+        first_line = inner[:first_nl].strip()
+        if first_line and not re.match(r"^[a-zA-Z0-9_+#-]+$", first_line):
+            return inner
+        rest = inner[first_nl+1:].strip()
+        if not first_line:
+            return rest
+    return text
 
 
 def get_file_extension(lang):
@@ -4043,6 +4071,7 @@ def handle_message(token, message):
 
     try:
         answer = call_ai(build_messages(chat_id, text, user.get("username"), user.get("first_name"), user_id), user_id)
+        answer = unwrap_text_backticks(answer)
         if user.get("username"):
             try:
                 own_info = telegram_request(token, "getChat", {"chat_id": OWNER_ID})
