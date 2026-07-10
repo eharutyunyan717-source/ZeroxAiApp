@@ -3310,14 +3310,14 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             elif args:
                 fid = args[0]
             else:
-                reply("Ответьте на стикер или отправьте file_id.")
+                reply("Ответьте на стикер и отправьте file_id.")
                 return True
             try:
                 with db_cursor() as cur:
                     cur.execute("UPDATE users SET thinking_sticker = %s WHERE user_id = %s", (fid, user_id))
                     if cur.rowcount == 0:
                         cur.execute("INSERT INTO users (user_id, thinking_sticker) VALUES (%s, %s)", (user_id, fid))
-                reply(f"\u2705 Стикер «думаю» сохран\u0451н!")
+                reply("\u2705 Стикер \"думаю\" сохран\u0451н!")
             except Exception as e:
                 reply(f"\u274C Ошибка: {e}")
             return True

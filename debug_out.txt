@@ -1,0 +1,2 @@
+ZeroxAI Telegram bot is running. @ZeruxAibot (id=8785146073)
+Hosting environment not detected. Skipping webhook setup (good for local dev).
