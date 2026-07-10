@@ -322,7 +322,7 @@ body {
 
 .message.user .bubble {
   background: var(--user-bubble);
-  border: none;
+  border: none !important;
 }
 
 .message.assistant .bubble {
