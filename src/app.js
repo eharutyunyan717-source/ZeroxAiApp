@@ -187,7 +187,7 @@ function renderMessages() {
     content.className = 'message-content';
     content.innerHTML = msg.content ? md.render(msg.content) : '';
     bubble.appendChild(content);
-    article.append(msg.role === 'user' ? [bubble, avatar] : [avatar, bubble]);
+    if (msg.role === 'user') { article.append(bubble, avatar); } else { article.append(avatar, bubble); }
     el.messages.appendChild(article);
   });
   scrollToBottom();
