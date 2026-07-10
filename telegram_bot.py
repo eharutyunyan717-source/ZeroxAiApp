@@ -4004,8 +4004,14 @@ def handle_message(token, message):
             f"Подождите восстановления или купите Pro: /buypro", message.get("message_id"), reply_markup=km)
         return
 
-    think_msg = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": "\U0001F914"})
-    think_msg_id = think_msg.get("result", {}).get("message_id")
+    import threading
+    typing_stop = threading.Event()
+    def keep_typing():
+        while not typing_stop.is_set():
+            telegram_request(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+            typing_stop.wait(4)
+    t = threading.Thread(target=keep_typing, daemon=True)
+    t.start()
 
     try:
         answer = call_ai(build_messages(chat_id, text, user.get("username"), user.get("first_name"), user_id), user_id)
@@ -4019,8 +4025,7 @@ def handle_message(token, message):
                         answer = answer.replace(f"@{own_uname}", f"@{sender_uname}")
             except:
                 pass
-        if think_msg_id:
-            telegram_request(token, "deleteMessage", {"chat_id": chat_id, "message_id": think_msg_id})
+        typing_stop.set()
         first_msg_id = None
         for chunk in split_message(answer):
             r = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True})
@@ -4046,11 +4051,7 @@ def handle_message(token, message):
         print(f"Error in AI chat handler: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
-        if think_msg_id:
-            try:
-                telegram_request(token, "deleteMessage", {"chat_id": chat_id, "message_id": think_msg_id})
-            except:
-                pass
+        typing_stop.set()
         reply_message(token, chat_id, f"\u274C Ошибка: {e}", message.get("message_id"))
 
     # persist menu keyboard
