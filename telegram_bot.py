@@ -787,10 +787,18 @@ def call_ai(messages, user_id):
 def call_ollama(messages, model=None):
     model_name = model or _LOCAL_MODEL_NAME
     body = json.dumps({"model": model_name, "messages": messages, "stream": False, "temperature": 0.3, "top_p": 0.9}).encode("utf-8")
-    import http.client
-    for attempt in range(3):
+    import http.client, socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(3)
+    try:
+        s.connect(("127.0.0.1", 11434))
+        s.close()
+    except:
+        s.close()
+        return ""
+    for attempt in range(2):
         try:
-            conn = http.client.HTTPConnection("127.0.0.1", 11434, timeout=120)
+            conn = http.client.HTTPConnection("127.0.0.1", 11434, timeout=30)
             conn.request("POST", "/api/chat", body=body, headers={"Content-Type": "application/json"})
             resp = conn.getresponse()
             raw = resp.read().decode("utf-8")
@@ -799,6 +807,7 @@ def call_ollama(messages, model=None):
                 data = json.loads(raw)
                 return data.get("message", {}).get("content", "").strip()
         except:
+            if attempt: return ""
             time.sleep(1)
     return ""
 
