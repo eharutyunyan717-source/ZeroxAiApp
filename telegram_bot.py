@@ -2127,11 +2127,11 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
 
             if cmd == "/setlocalmodel":
+                global _LOCAL_PRO_MODE
                 if len(args) < 1 or args[0] not in ("on", "off"):
                     status = "\u2705 включен" if _LOCAL_PRO_MODE else "\u274C выключен"
                     reply(f"\U0001F4E1 Локальная модель: {status}.\nИспользование: /setlocalmodel on/off")
                     return True
-                global _LOCAL_PRO_MODE
                 _LOCAL_PRO_MODE = (args[0] == "on")
                 reply(f"\u2705 Локальная модель {'включена' if _LOCAL_PRO_MODE else 'выключена'}. "
                       f"Pro-юзерам будет {'Qwen2.5-Coder (локально)' if _LOCAL_PRO_MODE else 'GPT-OSS 120B (Groq)'}. "
