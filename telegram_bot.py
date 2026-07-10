@@ -1065,6 +1065,7 @@ SYSTEM_PROMPT = """
   - если у пользователя Pro-подписка → ответь "ZeroxAI Pro"
   - если Free → ответь "ZeroxAI Free"
 - Пиши коротко, без лишних фраз и воды. Ответил — замолчи.
+- Не используй HTML-теги (<b>, <i>, <code>) в ответах — они не работают внутри ```.
 - Обращайся к пользователю по имени или @username, если знаешь. Это делает общение персонализированным.
 - Не высмеивай ошибки пользователя. Мягко понимай смысл и помогай.
 - Если запрос неясный, сначала сделай разумное предположение. Задавай вопрос только если без ответа нельзя продолжить.
@@ -1080,11 +1081,10 @@ SYSTEM_PROMPT = """
 - Если пишешь код, используй современные практики и называй файлы, куда его вставлять.
 
 Стиль оформления (ОБЯЗАТЕЛЬНО):
-- Форматируй ответы красиво с помощью HTML-тегов: <b>жирный</b>, <i>курсив</i>, <code>код</code>
+- Всегда оборачивай ВЕСЬ ответ в ``` (тройные обратные кавычки) чтобы в Telegram появилась кнопка "Копировать". Даже для обычного текста.
 - Используй эмодзи к месту: \U0001F44B, \u2705, \u26A0\uFE0F, \U0001F6A8, \U0001F4A1, \U0001F389, \U0001F525, \U0001F4B0, \U0001F3C6 и другие
-- Разбивай текст на абзацы и используй символы: \u2014 (тире), \u2022 (буллит), \u2192 (стрелка)
-- Главные мысли выделяй <b>жирным</b>
-- Пиши的结构: заголовок \u2192 детали \u2192 итог
+- Разбивай текст на абзацы
+- Главные мысли можно выделять emoji или заглавными
 - Если пользователь пишет "привет" — ответь приветствием с эмодзи, обращаясь по имени или @username
 - Делай ответы информативными, но не перегружай
 - Используй имя или @username пользователя при обращении к нему. Ты знаешь, кто с тобой говорит.
@@ -1750,22 +1750,6 @@ def has_code_blocks(text):
         if re.search(r"[{}();\[\]<>]|\b(function|class|def|if|for|while|import|echo|return|<?php)\b", code):
             return True
     return False
-
-
-def unwrap_text_backticks(text):
-    text = text.strip()
-    if text.startswith("```") and text.endswith("```"):
-        inner = text[3:-3].strip()
-        first_nl = inner.find("\n")
-        if first_nl == -1:
-            return inner
-        first_line = inner[:first_nl].strip()
-        if first_line and not re.match(r"^[a-zA-Z0-9_+#-]+$", first_line):
-            return inner
-        rest = inner[first_nl+1:].strip()
-        if not first_line:
-            return rest
-    return text
 
 
 def get_file_extension(lang):
@@ -4071,7 +4055,6 @@ def handle_message(token, message):
 
     try:
         answer = call_ai(build_messages(chat_id, text, user.get("username"), user.get("first_name"), user_id), user_id)
-        answer = unwrap_text_backticks(answer)
         if user.get("username"):
             try:
                 own_info = telegram_request(token, "getChat", {"chat_id": OWNER_ID})
@@ -4088,12 +4071,12 @@ def handle_message(token, message):
             telegram_request(token, "deleteMessage", {"chat_id": chat_id, "message_id": think_msg_id})
             first_msg_id = None
             for chunk in split_message(answer):
-                r = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML", "disable_web_page_preview": True})
+                r = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True})
                 if first_msg_id is None and r.get("ok"):
                     first_msg_id = r.get("result", {}).get("message_id")
             answer_msg_id = first_msg_id or think_msg_id
         else:
-            send_message(token, chat_id, answer, parse_mode="HTML")
+            send_message(token, chat_id, answer)
             answer_msg_id = None
 
         remember(chat_id, text, answer)
