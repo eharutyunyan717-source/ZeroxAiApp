@@ -100,8 +100,8 @@ body {
   width: 100%;
   padding: 10px;
   border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--bg);
+  border: none;
+  background: var(--sidebar-hover);
   color: var(--text);
   cursor: pointer;
   font-size: 13px;
@@ -307,7 +307,7 @@ body {
   display: flex;
   gap: 12px;
   padding: 16px 20px;
-  max-width: 820px;
+  max-width: 960px;
   margin: 0 auto;
   width: 100%;
   animation: msgIn 0.3s ease both;
@@ -321,8 +321,9 @@ body {
 .message.user { flex-direction: row-reverse; }
 
 .message.user .bubble {
-  background: var(--user-bubble);
+  background: var(--bg);
   border: none !important;
+  outline: none !important;
 }
 
 .message.assistant .bubble {
@@ -359,7 +360,7 @@ body {
 }
 
 .bubble {
-  max-width: 85%;
+  max-width: 95%;
   padding: 10px 14px;
   border-radius: var(--radius-lg);
   font-size: 14px;
@@ -481,17 +482,15 @@ body {
   display: flex;
   gap: 8px;
   align-items: flex-end;
-  max-width: 820px;
+  max-width: 960px;
   margin: 0 auto;
   padding: 8px 12px;
   background: var(--user-bubble);
-  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: box-shadow 0.15s ease;
 }
 
 .composer-inner:focus-within {
-  border-color: var(--text-muted);
   box-shadow: 0 0 0 1px var(--text-muted);
 }
 
