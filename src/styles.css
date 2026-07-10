@@ -321,7 +321,7 @@ body {
 .message.user { flex-direction: row-reverse; }
 
 .message.user .bubble {
-  background: var(--bg);
+  background: var(--user-bubble);
   border: none !important;
   outline: none !important;
 }
