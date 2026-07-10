@@ -30,9 +30,6 @@ ACTIVE_KEY_INDEX = 0
 TOKEN_LIMIT = 100000
 _LOCAL_PRO_MODE = False
 _LOCAL_MODEL_NAME = "qwen2.5-coder:14b-instruct"
-_LLM_QUEUE = {}
-_LLM_QUEUE_LOCK = threading.Lock()
-_LLM_QUEUE_ID = 0
 _GEMINI_LAST_CALL = 0
 _GEMINI_LOCK = threading.Lock()
 USER_HISTORIES = {}
@@ -779,7 +776,9 @@ def get_token_remaining(user_id):
 
 def call_ai(messages, user_id):
     if is_pro_user(user_id) and _LOCAL_PRO_MODE:
-        return call_ollama_queue(messages, user_id)
+        res = call_ollama(messages)
+        if res:
+            return res
     if is_pro_user(user_id):
         return call_groq(messages, "openai/gpt-oss-120b")
     return call_nvidia(messages, "meta/llama-3.1-8b-instruct")
@@ -799,62 +798,9 @@ def call_ollama(messages, model=None):
             if resp.status == 200:
                 data = json.loads(raw)
                 return data.get("message", {}).get("content", "").strip()
-        except Exception as e:
-            if attempt == 2:
-                return f"Ошибка локальной модели: {e}"
-            time.sleep(2)
-    return "Локальная модель недоступна."
-
-
-def llm_queue_add(messages, chat_id, user_id, reply_to):
-    global _LLM_QUEUE_ID
-    with _LLM_QUEUE_LOCK:
-        _LLM_QUEUE_ID += 1
-        jid = str(_LLM_QUEUE_ID)
-        _LLM_QUEUE[jid] = {"messages": messages, "chat_id": chat_id, "user_id": user_id, "reply_to": reply_to, "done": False, "result": None}
-        return jid
-
-
-def llm_queue_poll():
-    with _LLM_QUEUE_LOCK:
-        for jid, job in list(_LLM_QUEUE.items()):
-            if not job["done"]:
-                job["done"] = True
-                return {"id": jid, "messages": job["messages"], "chat_id": job["chat_id"], "user_id": job["user_id"], "reply_to": job["reply_to"]}
-    return {}
-
-
-def llm_queue_complete(job_id, result="", error=None):
-    with _LLM_QUEUE_LOCK:
-        if str(job_id) in _LLM_QUEUE:
-            if error:
-                del _LLM_QUEUE[str(job_id)]
-            else:
-                _LLM_QUEUE[str(job_id)]["result"] = result
-                _LLM_QUEUE[str(job_id)]["done"] = True
-
-
-def llm_queue_wait(jid, timeout=120):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        with _LLM_QUEUE_LOCK:
-            job = _LLM_QUEUE.get(jid)
-            if job is None:
-                return "Ошибка: задача отменена."
-            if job.get("result") is not None:
-                res = job["result"]
-                del _LLM_QUEUE[jid]
-                return res
-        time.sleep(1)
-    with _LLM_QUEUE_LOCK:
-        if jid in _LLM_QUEUE:
-            del _LLM_QUEUE[jid]
-    return "Таймаут ожидания локальной модели."
-
-
-def call_ollama_queue(messages, user_id):
-    jid = llm_queue_add(messages, 0, user_id, 0)
-    return llm_queue_wait(jid)
+        except:
+            time.sleep(1)
+    return ""
 
 
 def call_openrouter(messages, model=None):
@@ -2187,13 +2133,24 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     return True
                 global _LOCAL_PRO_MODE
                 _LOCAL_PRO_MODE = (args[0] == "on")
-                reply(f"\u2705 Локальная модель {'включена' if _LOCAL_PRO_MODE else 'выключена'}. Pro-юзерам будет {'Qwen2.5-Coder (локально)' if _LOCAL_PRO_MODE else 'GPT-OSS 120B (Groq)'}.")
+                reply(f"\u2705 Локальная модель {'включена' if _LOCAL_PRO_MODE else 'выключена'}. "
+                      f"Pro-юзерам будет {'Qwen2.5-Coder (локально)' if _LOCAL_PRO_MODE else 'GPT-OSS 120B (Groq)'}. "
+                      f"Если локальная модель недоступна — авто-fallback на Groq.")
                 return True
 
             if cmd == "/trainmodel":
-                reply("\U0001F4E6 Задача обучения поставлена в очередь. Запусти `ollama_train.py` на ноутбуке для выполнения.\n\n"
-                      "Команда для обучения: `ollama create qwen2.5-coder:14b-instruct -f Modelfile`\n"
-                      "Но через очередь будет запущена автоматически, когда скрипт её заберёт.")
+                reply("\U0001F4E6 Обучение модели — команда для терминала на ноутбуке.\n\n"
+                      "1. Создай Modelfile с примерами PHP-кода:\n"
+                      "```\nFROM qwen2.5-coder:14b-instruct\n\n"
+                      "SYSTEM \"Ты эксперт по PHP. Пиши чистый код.\"\n\n"
+                      "MESSAGE user \"Напиши функцию для...\"\n"
+                      "MESSAGE assistant \"<?php ...\"\n"
+                      "```\n\n"
+                      "2. Запусти обучение:\n"
+                      "```\nollama create qwen2.5-coder-php -f Modelfile\n"
+                      "ollama push qwen2.5-coder-php\n"
+                      "```\n"
+                      "3. Затем установи новую модель в боте через /setlocalmodel")
                 return True
 
             if cmd == "/hide":
@@ -4226,28 +4183,6 @@ def webhook_handler_factory(token):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(body_resp)
-            elif self.path == "/api/llm_queue/poll":
-                job = llm_queue_poll()
-                resp = json.dumps(job).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                self.wfile.write(resp)
-            elif self.path.startswith("/api/llm_queue/complete/"):
-                parts = self.path.split("/api/llm_queue/complete/")[1].split("?")
-                jid = parts[0]
-                err = None
-                if len(parts) > 1 and parts[1].startswith("error="):
-                    err = parts[1].split("=", 1)[1]
-                content_len = int(self.headers.get("Content-Length", 0))
-                result = ""
-                if content_len > 0:
-                    result = self.rfile.read(content_len).decode("utf-8")
-                llm_queue_complete(jid, result, err)
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.end_headers()
             else:
                 self.send_response(404)
                 self.end_headers()
