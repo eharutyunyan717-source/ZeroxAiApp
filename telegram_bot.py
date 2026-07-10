@@ -1026,6 +1026,25 @@ def save_histories_to_db():
 
 SSL_CONTEXT = ssl.create_default_context()
 
+THINKING_STICKERS = {}
+THINKING_STICKERS_FILE = "thinking_stickers.json"
+
+def _load_thinking_stickers():
+    global THINKING_STICKERS
+    try:
+        if os.path.exists(THINKING_STICKERS_FILE):
+            with open(THINKING_STICKERS_FILE, "r", encoding="utf-8") as f:
+                THINKING_STICKERS = json.load(f)
+    except Exception as e:
+        print(f"Failed to load thinking stickers: {e}", file=sys.stderr)
+
+def _save_thinking_stickers():
+    try:
+        with open(THINKING_STICKERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(THINKING_STICKERS, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"Failed to save thinking stickers: {e}", file=sys.stderr)
+
 
 LANG_EXT = {
     "python": ".py", "py": ".py",
@@ -3310,8 +3329,12 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             elif args:
                 fid = args[0]
             else:
-                reply("Ответьте на стикер и отправьте file_id.")
+                reply("Ответьте на стикер или отправьте file_id.")
                 return True
+            THINKING_STICKERS[str(user_id)] = fid
+            _save_thinking_stickers()
+            reply("\u2705 Стикер \"думаю\" сохран\u0451н!")
+            return True
             try:
                 with db_cursor() as cur:
                     cur.execute("UPDATE users SET thinking_sticker = %s WHERE user_id = %s", (fid, user_id))
@@ -4100,15 +4123,7 @@ def handle_message(token, message):
 
     think_msg_id = None
     try:
-        custom_fid = None
-        try:
-            with db_cursor() as cur:
-                cur.execute("SELECT thinking_sticker FROM users WHERE user_id = %s", (user_id,))
-                row = cur.fetchone()
-                if row and row[0]:
-                    custom_fid = row[0]
-        except:
-            pass
+        custom_fid = THINKING_STICKERS.get(str(user_id))
         if custom_fid:
             r = telegram_request(token, "sendSticker", {"chat_id": chat_id, "sticker": custom_fid})
         else:
@@ -4308,6 +4323,7 @@ def main():
 
     init_db()
     load_data()
+    _load_thinking_stickers()
 
     token = get_env("TELEGRAM_BOT_TOKEN")
 
