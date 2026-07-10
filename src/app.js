@@ -13,11 +13,11 @@ function makeMd() {
             highlighted = window.markdownit().utils.escapeHtml(str);
           }
         } catch { highlighted = str.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c]); }
-        return '<div class="code-header"><span>' + (lang || 'code') + '</span><button class="copy-code-btn" onclick="copyCode(this)">\u{1F4CB} \u0412\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u0432 \u0447\u0430\u0442</button></div><pre><code' + langAttr + '>' + highlighted + '</code></pre>';
+        return '<div class="code-header"><span>' + (lang || 'code') + '</span><button class="copy-code-btn" onclick="copyCode(this)">\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C</button></div><pre><code' + langAttr + '>' + highlighted + '</code></pre>';
       }
     });
   } catch {
-    return { render: t => '<div class="code-header"><span>code</span><button class="copy-code-btn" onclick="copyCode(this)">\u{1F4CB} \u0412\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u0432 \u0447\u0430\u0442</button></div><pre><code>' + t.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c]) + '</code></pre>' };
+    return { render: t => '<div class="code-header"><span>code</span><button class="copy-code-btn" onclick="copyCode(this)">\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C</button></div><pre><code>' + t.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c]) + '</code></pre>' };
   }
 }
 const md = makeMd();
@@ -354,13 +354,19 @@ window.copyCode = function(btn) {
   const pre = btn.closest('.code-header').nextElementSibling;
   const code = pre?.querySelector('code');
   if (!code) return;
-  const text = code.textContent;
-  el.input.value = text;
-  el.input.focus();
-  resizeInput();
-  el.sendBtn.disabled = false;
-  btn.textContent = '\u2705 Вставлено';
-  setTimeout(() => { btn.textContent = '\u{1F4CB} Вставить в чат'; }, 2000);
+  navigator.clipboard.writeText(code.textContent).then(() => {
+    btn.textContent = '\u2705 \u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u043E';
+    setTimeout(() => { btn.textContent = '\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C'; }, 1500);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = code.textContent;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta); ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.textContent = '\u2705 \u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u043E';
+    setTimeout(() => { btn.textContent = '\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C'; }, 1500);
+  });
 };
 
 function bind() {
