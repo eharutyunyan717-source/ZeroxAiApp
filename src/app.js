@@ -1,18 +1,26 @@
-const md = window.markdownit({
-  html: false,
-  breaks: true,
-  linkify: true,
-  highlight(str, lang) {
-    const langAttr = lang ? ` class="language-${lang}"` : '';
-    let highlighted = str;
-    if (lang && hljs.getLanguage(lang)) {
-      try { highlighted = hljs.highlight(str, { language: lang }).value; } catch {}
-    } else {
-      highlighted = md.utils.escapeHtml(str);
-    }
-    return `<div class="code-header"><span>${lang || 'code'}</span><button class="copy-code-btn" onclick="copyCode(this)">\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C</button></div><pre><code${langAttr}>${highlighted}</code></pre>`;
+function makeMd() {
+  try {
+    if (typeof window.markdownit !== 'function') throw 0;
+    return window.markdownit({
+      html: false, breaks: true, linkify: true,
+      highlight(str, lang) {
+        const langAttr = lang ? ` class="language-${lang}"` : '';
+        let highlighted = str;
+        try {
+          if (lang && window.hljs && window.hljs.getLanguage(lang)) {
+            highlighted = window.hljs.highlight(str, { language: lang }).value;
+          } else {
+            highlighted = window.markdownit().utils.escapeHtml(str);
+          }
+        } catch { highlighted = str.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c]); }
+        return '<div class="code-header"><span>' + (lang || 'code') + '</span><button class="copy-code-btn" onclick="copyCode(this)">\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C</button></div><pre><code' + langAttr + '>' + highlighted + '</code></pre>';
+      }
+    });
+  } catch {
+    return { render: t => '<pre>' + t.replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' })[c]) + '</pre>' };
   }
-});
+}
+const md = makeMd();
 
 const IS_ELECTRON = navigator.userAgent.toLowerCase().includes('electron') || window.electronAPI?.isElectron;
 const DEFAULT_ENDPOINT = IS_ELECTRON ? 'https://artistic-happiness-production.up.railway.app/api/chat' : '/api/chat';
