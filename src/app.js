@@ -1,110 +1,98 @@
-const STORAGE_KEY = "zeroxai.state.v1";
-const VAULT_KEY = "zeroxai.vault.v1";
+const md = window.markdownit({
+  html: false,
+  breaks: true,
+  linkify: true,
+  highlight(str, lang) {
+    const langAttr = lang ? ` class="language-${lang}"` : '';
+    let highlighted = str;
+    if (lang && hljs.getLanguage(lang)) {
+      try { highlighted = hljs.highlight(str, { language: lang }).value; } catch {}
+    } else {
+      highlighted = md.utils.escapeHtml(str);
+    }
+    return `<div class="code-header"><span>${lang || 'code'}</span><button class="copy-code-btn" onclick="copyCode(this)">\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C</button></div><pre><code${langAttr}>${highlighted}</code></pre>`;
+  }
+});
+
+const STORAGE_KEY = 'zeroxai.v3';
 const DEFAULT_SETTINGS = {
-  profileName: "User",
-  provider: "zeroxai-server",
-  baseUrl: "/api/chat",
-  model: "openai/gpt-oss-120b",
-  theme: "system"
+  profileName: '\u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C',
+  theme: 'system',
+  apiEndpoint: '/api/chat',
+  modelName: 'openai/gpt-oss-120b',
+  apiKey: '',
+  thinkingAnim: true,
+  typingSpeed: 'normal'
+};
+const TYPING_SPEEDS = { fast: 20, normal: 35, slow: 60 };
+
+let state = { chats: [], activeChatId: null, settings: { ...DEFAULT_SETTINGS }, busy: false, abort: null };
+
+const $ = id => document.getElementById(id);
+const el = {
+  sidebar: $('sidebar'),
+  overlay: $('sidebarOverlay'),
+  chatList: $('chatList'),
+  messages: $('messages'),
+  composer: $('composer'),
+  input: $('messageInput'),
+  sendBtn: $('sendBtn'),
+  newChatBtn: $('newChatBtn'),
+  menuBtn: $('menuBtn'),
+  chatTitle: $('chatTitle'),
+  chatStatus: $('chatStatus'),
+  searchInput: $('searchInput'),
+  settingsBtn: $('settingsBtn'),
+  topSettingsBtn: $('topSettingsBtn'),
+  settingsPanel: $('settingsPanel'),
+  closeSettingsBtn: $('closeSettingsBtn'),
+  settingsForm: $('settingsForm'),
+  profileName: $('profileName'),
+  apiEndpoint: $('apiEndpoint'),
+  modelName: $('modelName'),
+  apiKeyField: $('apiKeyField'),
+  thinkingAnim: $('thinkingAnim'),
+  typingSpeed: $('typingSpeed'),
+  themeBtns: document.querySelectorAll('[data-theme]'),
+  thinkingOverlay: $('thinkingOverlay'),
+  thinkingVideo: $('thinkingVideo')
 };
 
-const state = {
-  settings: { ...DEFAULT_SETTINGS },
-  chats: [],
-  activeChatId: null,
-  apiKey: "",
-  vaultPassphrase: ""
-};
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
-const els = {
-  sidebar: document.querySelector("#sidebar"),
-  menuButton: document.querySelector("#menuButton"),
-  drawerBackdrop: document.querySelector("#drawerBackdrop"),
-  chatList: document.querySelector("#chatList"),
-  messages: document.querySelector("#messages"),
-  composer: document.querySelector("#composer"),
-  messageInput: document.querySelector("#messageInput"),
-  sendButton: document.querySelector("#sendButton"),
-  newChatButton: document.querySelector("#newChatButton"),
-  chatTitle: document.querySelector("#chatTitle"),
-  chatSubtitle: document.querySelector("#chatSubtitle"),
-  themeToggle: document.querySelector("#themeToggle"),
-  settingsButton: document.querySelector("#settingsButton"),
-  settingsButtonTop: document.querySelector("#settingsButtonTop"),
-  settingsDrawer: document.querySelector("#settingsDrawer"),
-  closeSettingsButton: document.querySelector("#closeSettingsButton"),
-  settingsForm: document.querySelector("#settingsForm"),
-  profileName: document.querySelector("#profileName"),
-  apiProvider: document.querySelector("#apiProvider"),
-  baseUrl: document.querySelector("#baseUrl"),
-  modelName: document.querySelector("#modelName"),
-  apiKey: document.querySelector("#apiKey"),
-  vaultPassphrase: document.querySelector("#vaultPassphrase"),
-  themeChoiceButtons: [...document.querySelectorAll("[data-theme-choice]")]
-};
-
-function uid(prefix = "id") {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+function Save() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    chats: state.chats.map(c => ({ ...c, messages: c.messages.map(m => ({ ...m })) })),
+    activeChatId: state.activeChatId,
+    settings: state.settings
+  })); } catch {}
 }
 
-function loadState() {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (!saved) {
-    createChat();
-    return;
-  }
-
+function Load() {
   try {
-    const parsed = JSON.parse(saved);
-    state.settings = { ...DEFAULT_SETTINGS, ...parsed.settings };
-    state.settings.provider = DEFAULT_SETTINGS.provider;
-    state.settings.baseUrl = DEFAULT_SETTINGS.baseUrl;
-    state.settings.model = DEFAULT_SETTINGS.model;
-    state.chats = Array.isArray(parsed.chats) ? parsed.chats : [];
-    state.activeChatId = parsed.activeChatId;
-  } catch {
-    state.chats = [];
-  }
-
-  if (!state.chats.length) createChat();
-  if (!state.chats.some((chat) => chat.id === state.activeChatId)) {
-    state.activeChatId = state.chats[0].id;
-  }
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) { createChat(); return; }
+    const data = JSON.parse(raw);
+    state.settings = { ...DEFAULT_SETTINGS, ...data.settings };
+    state.chats = data.chats || [];
+    state.activeChatId = data.activeChatId || null;
+    if (!state.chats.length) createChat();
+    if (!state.chats.find(c => c.id === state.activeChatId)) { state.activeChatId = state.chats[0].id; }
+  } catch { createChat(); }
 }
 
-function saveState() {
-  localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify({
-      settings: state.settings,
-      chats: state.chats,
-      activeChatId: state.activeChatId
-    })
-  );
-}
-
-function getActiveChat() {
-  return state.chats.find((chat) => chat.id === state.activeChatId);
-}
+function getChat() { return state.chats.find(c => c.id === state.activeChatId); }
 
 function createChat() {
-  const chat = {
-    id: uid("chat"),
-    title: "Новый чат",
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    messages: []
-  };
+  const chat = { id: uid(), title: '\u041D\u043E\u0432\u044B\u0439 \u0447\u0430\u0442', createdAt: Date.now(), messages: [] };
   state.chats.unshift(chat);
   state.activeChatId = chat.id;
-  saveState();
-  render();
-  return chat;
+  Save(); render(); return chat;
 }
 
-function updateChatTitle(chat) {
-  const firstUserMessage = chat.messages.find((message) => message.role === "user");
-  chat.title = firstUserMessage ? firstUserMessage.content.slice(0, 52) : "Новый чат";
+function updateTitle(chat) {
+  const m = chat.messages.find(msg => msg.role === 'user');
+  chat.title = m ? m.content.slice(0, 50) + (m.content.length > 50 ? '...' : '') : '\u041D\u043E\u0432\u044B\u0439 \u0447\u0430\u0442';
 }
 
 function render() {
@@ -115,423 +103,271 @@ function render() {
 }
 
 function renderChatList() {
-  els.chatList.innerHTML = "";
-  state.chats.forEach((chat) => {
-    const item = document.createElement("div");
-    item.className = `chat-list-item${chat.id === state.activeChatId ? " active" : ""}`;
-    item.dataset.chatId = chat.id;
-    item.innerHTML = `
-      <span>${escapeHtml(chat.title)}</span>
-      <small>${formatDate(chat.updatedAt)}</small>
-      <button class="chat-menu-btn" type="button" aria-label="Меню чата">⋮</button>
-      <div class="chat-menu" hidden>
-        <button type="button" class="chat-menu-rename">Переименовать</button>
-        <button type="button" class="chat-menu-delete">Удалить</button>
-      </div>
-    `;
-    item.addEventListener("click", (e) => {
-      if (e.target.closest(".chat-menu-btn, .chat-menu")) return;
-      state.activeChatId = chat.id;
-      saveState();
-      closeMobileMenu();
-      render();
+  const q = el.searchInput.value.toLowerCase();
+  el.chatList.innerHTML = '';
+  state.chats.forEach(chat => {
+    if (q && !chat.title.toLowerCase().includes(q) && !chat.messages.some(m => m.content.toLowerCase().includes(q))) return;
+    const div = document.createElement('div');
+    div.className = 'chat-item' + (chat.id === state.activeChatId ? ' active' : '');
+    div.innerHTML = `<span class="chat-title-text">${esc(chat.title)}</span>
+      <span class="chat-actions">
+        <button class="chat-action-btn" data-action="rename" title="\u041F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u0442\u044C">\u270F\uFE0F</button>
+        <button class="chat-action-btn danger" data-action="delete" title="\u0423\u0434\u0430\u043B\u0438\u0442\u044C">\u2716</button>
+      </span>`;
+    div.addEventListener('click', e => {
+      if (e.target.closest('.chat-action-btn')) return;
+      state.activeChatId = chat.id; Save(); render(); closeSidebar();
     });
-    item.querySelector(".chat-menu-btn").addEventListener("click", (e) => {
+    div.querySelector('[data-action="rename"]').addEventListener('click', e => {
       e.stopPropagation();
-      const menu = item.querySelector(".chat-menu");
-      const isOpen = !menu.hidden;
-      closeAllChatMenus();
-      if (isOpen) return;
-      const rect = e.currentTarget.getBoundingClientRect();
-      menu.style.left = Math.max(4, rect.right - 160) + "px";
-      menu.style.top = rect.bottom + 4 + "px";
-      menu.hidden = false;
+      const t = prompt('\u041D\u043E\u0432\u043E\u0435 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435:', chat.title);
+      if (t && t.trim()) { chat.title = t.trim(); Save(); renderChatList(); }
     });
-    item.querySelector(".chat-menu-rename").addEventListener("click", (e) => {
+    div.querySelector('[data-action="delete"]').addEventListener('click', e => {
       e.stopPropagation();
-      const title = prompt("Новое название чата:", chat.title);
-      if (title && title.trim()) {
-        chat.title = title.trim();
-        saveState();
-        render();
-      }
-    });
-    item.querySelector(".chat-menu-delete").addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (!confirm("Удалить этот чат?")) return;
+      if (!confirm('\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u044D\u0442\u043E\u0442 \u0447\u0430\u0442?')) return;
       const idx = state.chats.indexOf(chat);
       state.chats.splice(idx, 1);
       if (state.activeChatId === chat.id) {
         state.activeChatId = state.chats.length ? state.chats[Math.min(idx, state.chats.length - 1)].id : null;
         if (!state.activeChatId) createChat();
       }
-      closeAllChatMenus();
-      saveState();
-      render();
+      Save(); render();
     });
-    els.chatList.append(item);
+    el.chatList.appendChild(div);
   });
-}
-
-function closeAllChatMenus() {
-  els.chatList.querySelectorAll(".chat-menu").forEach((m) => (m.hidden = true));
 }
 
 function renderMessages() {
-  const chat = getActiveChat();
-  els.messages.innerHTML = "";
-  els.chatTitle.textContent = chat?.title || "Новый чат";
-  els.chatSubtitle.textContent = chat?.messages?.length ? `${chat.messages.length} сообщений` : "Готов к работе";
+  const chat = getChat();
+  el.chatTitle.textContent = chat?.title || '\u041D\u043E\u0432\u044B\u0439 \u0447\u0430\u0442';
+  el.chatStatus.textContent = chat?.messages?.length ? chat.messages.length + ' \u0441\u043E\u043E\u0431\u0449' : '\u0413\u043E\u0442\u043E\u0432 \u043A \u0440\u0430\u0431\u043E\u0442\u0435';
+  el.messages.innerHTML = '';
 
-  if (!chat || chat.messages.length === 0) {
-    const template = document.querySelector("#welcomeTemplate").content.cloneNode(true);
-    template.querySelectorAll("button").forEach((button) => {
-      button.addEventListener("click", () => {
-        els.messageInput.value = button.textContent;
-        resizeComposer();
-        els.messageInput.focus();
-      });
+  if (!chat || !chat.messages.length) {
+    el.messages.innerHTML = `<div class="welcome">
+      <img src="assets/logo.svg" alt="" class="welcome-logo" />
+      <h2>\u0427\u0435\u043C \u043C\u043E\u0433\u0443 \u043F\u043E\u043C\u043E\u0447\u044C?</h2>
+      <p>\u042F ZeroxAI \u2014 \u043C\u043D\u043E\u0433\u043E\u0444\u0443\u043D\u043A\u0446\u0438\u043E\u043D\u0430\u043B\u044C\u043D\u044B\u0439 AI-\u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043D\u0442</p>
+      <div class="welcome-suggestions">
+        <button>\u0421\u043E\u0441\u0442\u0430\u0432\u044C \u043F\u043B\u0430\u043D \u0437\u0430\u043F\u0443\u0441\u043A\u0430 \u043F\u0440\u043E\u0434\u0443\u043A\u0442\u0430</button>
+        <button>\u041F\u043E\u043C\u043E\u0433\u0438 \u043D\u0430\u043F\u0438\u0441\u0430\u0442\u044C \u043F\u0438\u0441\u044C\u043C\u043E \u043A\u043B\u0438\u0435\u043D\u0442\u0443</button>
+        <button>\u041E\u0431\u044A\u044F\u0441\u043D\u0438 \u043A\u0432\u0430\u043D\u0442\u043E\u0432\u0443\u044E \u0444\u0438\u0437\u0438\u043A\u0443</button>
+        <button>\u0421\u0433\u0435\u043D\u0435\u0440\u0438\u0440\u0443\u0439 \u0438\u0434\u0435\u0438 \u0434\u043B\u044F \u0441\u0442\u0430\u0440\u0442\u0430\u043F\u0430</button>
+      </div>
+    </div>`;
+    el.messages.querySelectorAll('.welcome-suggestions button').forEach(b => {
+      b.addEventListener('click', () => { el.input.value = b.textContent; el.input.focus(); resizeInput(); });
     });
-    els.messages.append(template);
     return;
   }
 
-  chat.messages.forEach((message) => {
-    els.messages.append(createMessageNode(message));
+  chat.messages.forEach((msg, i) => {
+    const article = document.createElement('div');
+    article.className = 'message ' + msg.role;
+    article.dataset.index = i;
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar ' + (msg.role === 'user' ? 'user-avatar' : 'ai-avatar');
+    avatar.textContent = msg.role === 'user' ? (state.settings.profileName[0] || 'U') : 'Z';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    const content = document.createElement('div');
+    content.className = 'message-content';
+    content.innerHTML = msg.content ? md.render(msg.content) : '';
+    bubble.appendChild(content);
+    article.append(msg.role === 'user' ? [bubble, avatar] : [avatar, bubble]);
+    el.messages.appendChild(article);
   });
-  els.messages.scrollTop = els.messages.scrollHeight;
+  scrollToBottom();
 }
 
-function createMessageNode(message) {
-  const article = document.createElement("article");
-  article.className = `message ${message.role}`;
-  article.dataset.messageId = message.id;
+function scrollToBottom() {
+  requestAnimationFrame(() => { el.messages.scrollTop = el.messages.scrollHeight; });
+}
 
-  const avatar = document.createElement("div");
-  avatar.className = "avatar";
-  avatar.textContent = message.role === "assistant" ? "Z" : initials(state.settings.profileName);
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
 
-  const bubble = document.createElement("div");
-  bubble.className = "bubble";
+function addMsg(role, content) {
+  const chat = getChat();
+  const msg = { id: uid(), role, content, createdAt: Date.now() };
+  chat.messages.push(msg);
+  chat.updatedAt = Date.now();
+  updateTitle(chat);
+  Save();
+  return msg;
+}
 
-  const meta = document.createElement("div");
-  meta.className = "message-meta";
-  meta.innerHTML = `<strong>${message.role === "assistant" ? "ZeroxAI" : escapeHtml(state.settings.profileName || "User")}</strong><span>${formatTime(message.createdAt)}</span>`;
+async function handleSubmit(e) {
+  e.preventDefault();
+  const text = el.input.value.trim();
+  if (!text || state.busy) return;
 
-  const content = document.createElement("div");
-  content.className = "message-content";
-  content.textContent = message.content;
+  el.input.value = ''; resizeInput();
+  addMsg('user', text);
 
-  bubble.append(meta, content);
+  const chat = getChat();
+  renderMessages();
 
-  if (message.role === "assistant" && message.content) {
-    const copy = document.createElement("button");
-    copy.type = "button";
-    copy.className = "copy-button";
-    copy.textContent = "Копировать";
-    copy.addEventListener("click", async () => {
-      await navigator.clipboard.writeText(message.content);
-      copy.textContent = "Скопировано";
-      setTimeout(() => (copy.textContent = "Копировать"), 1400);
-    });
-    bubble.append(copy);
+  state.busy = true; el.sendBtn.disabled = true; el.input.disabled = true;
+  el.chatStatus.textContent = '\u041E\u0442\u0432\u0435\u0447\u0430\u044E...';
+
+  const aiMsg = addMsg('assistant', '');
+
+  if (state.settings.thinkingAnim) {
+    el.thinkingOverlay.classList.remove('hidden');
+    el.thinkingVideo.play().catch(() => {});
   }
 
-  article.append(avatar, bubble);
-  return article;
-}
-
-function addMessage(role, content) {
-  const chat = getActiveChat();
-  const message = {
-    id: uid("msg"),
-    role,
-    content,
-    createdAt: new Date().toISOString()
-  };
-  chat.messages.push(message);
-  chat.updatedAt = message.createdAt;
-  updateChatTitle(chat);
-  saveState();
-  render();
-  return message;
-}
-
-async function handleSubmit(event) {
-  event.preventDefault();
-  const content = els.messageInput.value.trim();
-  if (!content) return;
-
-  els.messageInput.value = "";
-  resizeComposer();
-  addMessage("user", content);
-
-  const loading = addMessage("assistant", "");
-  setBusy(true);
-  showTyping(loading.id);
-
   try {
-    const answer = await requestAiResponse();
-    loading.content = answer;
-  } catch (error) {
-    loading.content = `Не удалось получить ответ: ${error.message}`;
+    const answer = await requestAI(text);
+    aiMsg.content = answer;
+    el.thinkingOverlay.classList.add('hidden');
+    el.thinkingVideo.pause();
+    chat.updatedAt = Date.now();
+    Save();
+    renderMessages();
+    typeResponse(aiMsg.id, answer);
+  } catch (err) {
+    el.thinkingOverlay.classList.add('hidden');
+    el.thinkingVideo.pause();
+    aiMsg.content = '\u274C \u041E\u0448\u0438\u0431\u043A\u0430: ' + err.message;
+    Save();
+    renderMessages();
   } finally {
-    const chat = getActiveChat();
-    chat.updatedAt = new Date().toISOString();
-    saveState();
-    setBusy(false);
-    render();
+    state.busy = false; el.sendBtn.disabled = false; el.input.disabled = false;
+    el.chatStatus.textContent = '\u0413\u043E\u0442\u043E\u0432';
+    el.input.focus();
   }
 }
 
-async function requestAiResponse() {
-  const chat = getActiveChat();
-  const messages = chat.messages
-    .filter((message) => message.content)
-    .slice(-24)
-    .map((message) => ({ role: message.role, content: message.content }));
-
-  const response = await fetch("/api/chat", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      messages,
-      temperature: 0.7
-    })
-  });
-
-  if (!response.ok) {
-    const detail = await safeReadError(response);
-    throw new Error(detail || `API вернул статус ${response.status}`);
-  }
-
-  const data = await response.json();
-  return data?.content?.trim() || "Пустой ответ от модели.";
-}
-
-function showTyping(messageId) {
-  const node = document.querySelector(`[data-message-id="${messageId}"] .message-content`);
+function typeResponse(msgId, text) {
+  const idx = getChat().messages.findIndex(m => m.id === msgId);
+  if (idx === -1) return;
+  const node = el.messages.querySelector(`[data-index="${idx}"] .message-content`);
   if (!node) return;
-  node.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
-}
 
-function setBusy(isBusy) {
-  els.sendButton.disabled = isBusy;
-  els.messageInput.disabled = isBusy;
-  els.chatSubtitle.textContent = isBusy ? "ZeroxAI думает..." : els.chatSubtitle.textContent;
-}
+  const speed = TYPING_SPEEDS[state.settings.typingSpeed] || 35;
+  let pos = 0;
+  const rendered = md.render(text);
+  const lines = text.split('\n');
+  let lineIdx = 0;
+  let charPos = 0;
 
-async function safeReadError(response) {
-  try {
-    const data = await response.json();
-    return data?.error?.message;
-  } catch {
-    return "";
+  node.classList.add('typing-cursor');
+
+  function typeChar() {
+    if (pos >= text.length || !getChat() || state.busy) {
+      node.classList.remove('typing-cursor');
+      node.innerHTML = rendered;
+      scrollToBottom();
+      return;
+    }
+    const slice = text.slice(0, pos + 1);
+    node.innerHTML = md.render(slice) + '<span class="typing-cursor"></span>';
+    pos++;
+    scrollToBottom();
+    const char = text[pos - 1];
+    const delay = char === '\n' ? speed * 3 : char === ' ' ? speed * 0.5 : speed;
+    setTimeout(typeChar, delay);
   }
+  typeChar();
+}
+
+async function requestAI(text) {
+  const resp = await fetch(state.settings.apiEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: text, user_id: 0, chat_id: 'web_' + uid() })
+  });
+  if (!resp.ok) {
+    let detail = '';
+    try { const d = await resp.json(); detail = d.error?.message || d.error || d.detail || ''; } catch {}
+    throw new Error(detail || `HTTP ${resp.status}`);
+  }
+  const data = await resp.json();
+  return (data.response || data.content || data.message?.content || '').trim() || '\u041F\u0443\u0441\u0442\u043E\u0439 \u043E\u0442\u0432\u0435\u0442';
 }
 
 function fillSettings() {
-  els.profileName.value = state.settings.profileName;
-  els.apiProvider.value = state.settings.provider;
-  els.baseUrl.value = state.settings.baseUrl;
-  els.modelName.value = state.settings.model;
-  els.apiProvider.disabled = true;
-  els.baseUrl.disabled = true;
-  els.modelName.disabled = true;
-  els.apiKey.disabled = true;
-  els.apiKey.placeholder = "Ключи подключены на сервере";
-  els.vaultPassphrase.disabled = true;
-  els.vaultPassphrase.placeholder = "Не требуется для серверного режима";
-  els.themeChoiceButtons.forEach((button) => {
-    button.classList.toggle("active", button.dataset.themeChoice === state.settings.theme);
-  });
-}
-
-async function handleSettingsSubmit(event) {
-  event.preventDefault();
-  state.settings = {
-    profileName: els.profileName.value.trim() || "User",
-    provider: DEFAULT_SETTINGS.provider,
-    baseUrl: DEFAULT_SETTINGS.baseUrl,
-    model: DEFAULT_SETTINGS.model,
-    theme: state.settings.theme
-  };
-  state.vaultPassphrase = els.vaultPassphrase.value;
-
-  if (els.apiKey.value.trim()) {
-    if (!state.vaultPassphrase) {
-      alert("Введите пароль хранилища, чтобы зашифровать API Key.");
-      return;
-    }
-    await saveEncryptedApiKey(els.apiKey.value.trim(), state.vaultPassphrase);
-    state.apiKey = els.apiKey.value.trim();
-    els.apiKey.value = "";
-  }
-
-  saveState();
-  closeSettings();
-  render();
-}
-
-async function getApiKey() {
-  if (state.apiKey) return state.apiKey;
-  if (!els.vaultPassphrase.value && !state.vaultPassphrase) return "";
-  state.vaultPassphrase = els.vaultPassphrase.value || state.vaultPassphrase;
-  state.apiKey = await loadEncryptedApiKey(state.vaultPassphrase);
-  return state.apiKey;
-}
-
-async function saveEncryptedApiKey(apiKey, passphrase) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await deriveKey(passphrase, salt);
-  const encoded = new TextEncoder().encode(apiKey);
-  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoded);
-  localStorage.setItem(
-    VAULT_KEY,
-    JSON.stringify({
-      salt: toBase64(salt),
-      iv: toBase64(iv),
-      data: toBase64(new Uint8Array(encrypted))
-    })
-  );
-}
-
-async function loadEncryptedApiKey(passphrase) {
-  const saved = localStorage.getItem(VAULT_KEY);
-  if (!saved) return "";
-
-  try {
-    const vault = JSON.parse(saved);
-    const salt = fromBase64(vault.salt);
-    const iv = fromBase64(vault.iv);
-    const data = fromBase64(vault.data);
-    const key = await deriveKey(passphrase, salt);
-    const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data);
-    return new TextDecoder().decode(decrypted);
-  } catch {
-    throw new Error("пароль хранилища не подходит для сохранённого API Key");
-  }
-}
-
-async function deriveKey(passphrase, salt) {
-  const material = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(passphrase),
-    "PBKDF2",
-    false,
-    ["deriveKey"]
-  );
-  return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 180000, hash: "SHA-256" },
-    material,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"]
-  );
-}
-
-function toBase64(bytes) {
-  return btoa(String.fromCharCode(...bytes));
-}
-
-function fromBase64(value) {
-  return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+  el.profileName.value = state.settings.profileName;
+  el.apiEndpoint.value = state.settings.apiEndpoint;
+  el.modelName.value = state.settings.modelName;
+  el.apiKeyField.value = state.settings.apiKey;
+  el.thinkingAnim.checked = state.settings.thinkingAnim;
+  el.typingSpeed.value = state.settings.typingSpeed;
+  el.themeBtns.forEach(b => b.classList.toggle('active', b.dataset.theme === state.settings.theme));
 }
 
 function applyTheme() {
-  const preference = state.settings.theme;
-  const isDark =
-    preference === "dark" ||
-    (preference === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.dataset.theme = isDark ? "dark" : "light";
-  document.querySelector('meta[name="theme-color"]').setAttribute("content", isDark ? "#eef9ff" : "#f4fbff");
+  const t = state.settings.theme;
+  const isDark = t === 'dark' || (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
 }
 
-function toggleTheme() {
-  state.settings.theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  saveState();
-  render();
+function openSettings() { el.settingsPanel.classList.remove('hidden'); }
+function closeSettings() { el.settingsPanel.classList.add('hidden'); }
+function closeSidebar() { el.sidebar.classList.remove('open'); el.overlay.classList.remove('open'); }
+
+function resizeInput() {
+  el.input.style.height = 'auto';
+  el.input.style.height = Math.min(el.input.scrollHeight, 200) + 'px';
 }
 
-function resizeComposer() {
-  els.messageInput.style.height = "auto";
-  els.messageInput.style.height = `${Math.min(160, els.messageInput.scrollHeight)}px`;
+function handleSettingsSubmit(e) {
+  e.preventDefault();
+  state.settings.profileName = el.profileName.value.trim() || 'User';
+  state.settings.apiEndpoint = el.apiEndpoint.value.trim() || '/api/chat';
+  state.settings.modelName = el.modelName.value.trim() || 'openai/gpt-oss-120b';
+  state.settings.apiKey = el.apiKeyField.value.trim();
+  state.settings.thinkingAnim = el.thinkingAnim.checked;
+  state.settings.typingSpeed = el.typingSpeed.value;
+  Save(); closeSettings(); render();
 }
 
-function openSettings() {
-  els.settingsDrawer.setAttribute("aria-hidden", "false");
-  els.drawerBackdrop.classList.add("visible");
-  els.vaultPassphrase.focus();
-}
+window.copyCode = function(btn) {
+  const pre = btn.closest('.code-header').nextElementSibling;
+  const code = pre?.querySelector('code');
+  if (!code) return;
+  navigator.clipboard.writeText(code.textContent).then(() => {
+    btn.textContent = '\u2705 \u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u043E';
+    setTimeout(() => { btn.textContent = '\u{1F4CB} \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C'; }, 1500);
+  });
+};
 
-function closeSettings() {
-  els.settingsDrawer.setAttribute("aria-hidden", "true");
-  els.drawerBackdrop.classList.remove("visible");
-}
-
-function closeMobileMenu() {
-  els.sidebar.classList.remove("open");
-  els.drawerBackdrop.classList.remove("visible");
-}
-
-function escapeHtml(value) {
-  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]);
-}
-
-function initials(name) {
-  return (name || "U").trim().slice(0, 1).toUpperCase();
-}
-
-function formatDate(value) {
-  return new Intl.DateTimeFormat("ru", { day: "2-digit", month: "short" }).format(new Date(value));
-}
-
-function formatTime(value) {
-  return new Intl.DateTimeFormat("ru", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
-}
-
-function bindEvents() {
-  els.composer.addEventListener("submit", handleSubmit);
-  els.messageInput.addEventListener("input", resizeComposer);
-  els.messageInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      els.composer.requestSubmit();
+function bind() {
+  el.composer.addEventListener('submit', handleSubmit);
+  el.input.addEventListener('input', resizeInput);
+  el.input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); el.composer.requestSubmit(); }
+  });
+  el.newChatBtn.addEventListener('click', () => { createChat(); closeSidebar(); });
+  el.menuBtn.addEventListener('click', () => { el.sidebar.classList.toggle('open'); el.overlay.classList.toggle('open'); });
+  el.overlay.addEventListener('click', closeSidebar);
+  el.searchInput.addEventListener('input', renderChatList);
+  el.settingsBtn.addEventListener('click', openSettings);
+  el.topSettingsBtn.addEventListener('click', openSettings);
+  el.closeSettingsBtn.addEventListener('click', closeSettings);
+  el.settingsForm.addEventListener('submit', handleSettingsSubmit);
+  el.themeBtns.forEach(b => b.addEventListener('click', () => {
+    state.settings.theme = b.dataset.theme; el.themeBtns.forEach(x => x.classList.toggle('active', x === b)); applyTheme(); Save();
+  }));
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.settings-panel') && !e.target.closest('[id$="settingsBtn"]') && !e.target.closest('#topSettingsBtn')) {
+      if (!el.settingsPanel.classList.contains('hidden')) closeSettings();
     }
   });
-  els.newChatButton.addEventListener("click", () => {
-    createChat();
-    closeMobileMenu();
+  el.input.addEventListener('input', () => {
+    el.sendBtn.disabled = !el.input.value.trim();
   });
-  els.themeToggle.addEventListener("click", toggleTheme);
-  els.settingsButton.addEventListener("click", openSettings);
-  els.settingsButtonTop.addEventListener("click", openSettings);
-  els.closeSettingsButton.addEventListener("click", closeSettings);
-  els.drawerBackdrop.addEventListener("click", () => {
-    closeSettings();
-    closeMobileMenu();
-  });
-  els.menuButton.addEventListener("click", () => {
-    els.sidebar.classList.add("open");
-    els.drawerBackdrop.classList.add("visible");
-  });
-  els.settingsForm.addEventListener("submit", handleSettingsSubmit);
-  els.themeChoiceButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      state.settings.theme = button.dataset.themeChoice;
-      saveState();
-      render();
-    });
-  });
-  document.addEventListener("click", (e) => {
-    if (!e.target.closest(".chat-menu-btn, .chat-menu")) closeAllChatMenus();
-  });
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme());
 }
 
-loadState();
-bindEvents();
+Load();
+bind();
 render();

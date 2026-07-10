@@ -4149,7 +4149,43 @@ def set_webhook(token):
 def webhook_handler_factory(token):
     class WebhookHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path in {"/", "/health", "/healthz"}:
+            path = self.path.split("?")[0]
+            static_files = {
+                "/": ("index.html", "text/html"),
+                "/index.html": ("index.html", "text/html"),
+                "/src/app.js": ("src/app.js", "application/javascript"),
+                "/src/styles.css": ("src/styles.css", "text/css"),
+                "/assets/logo.svg": ("assets/logo.svg", "image/svg+xml"),
+                "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+                "/service-worker.js": ("service-worker.js", "application/javascript"),
+            }
+            if path in static_files:
+                fname, ctype = static_files[path]
+                try:
+                    with open(fname, "rb") as f:
+                        content = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype + "; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    self.wfile.write(content)
+                except:
+                    self.send_error(404)
+            elif path.startswith("/Animations/"):
+                fname = path.lstrip("/")
+                ext = fname.split(".")[-1] if "." in fname else ""
+                ctype = {"webm": "video/webm", "mp4": "video/mp4", "gif": "image/gif"}.get(ext, "application/octet-stream")
+                try:
+                    with open(fname, "rb") as f:
+                        content = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    self.wfile.write(content)
+                except:
+                    self.send_error(404)
+            elif path in {"/health", "/healthz"}:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.end_headers()
