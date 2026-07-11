@@ -2454,6 +2454,7 @@ KNOWN_COMMANDS = {
     "/hide", "/savehistory", "/answer",
     "/giveall", "/addcoin", "/testshop", "/logs", "/setsub",
     "/setlocalmodel", "/trainmodel",
+    "/project",
 }
 
 def should_respond(message):
@@ -4512,7 +4513,7 @@ def handle_message(token, message):
 
     try:
         rcon = RCON_SERVERS.get(chat_id)
-        if rcon and not text.startswith(("/server", "/startbot", "/stopbot")):
+        if rcon and not text.startswith(("/server", "/startbot", "/stopbot", "/project")):
             resp, err = rcon_command(rcon["host"], rcon["port"], rcon["password"], text)
             if err:
                 reply_message(token, chat_id, f"\u274C RCON: {err}", message.get("message_id"))
