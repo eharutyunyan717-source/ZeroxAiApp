@@ -1,4 +1,5 @@
 import io
+import html
 import json
 import os
 import psycopg2
@@ -526,12 +527,6 @@ def init_db():
                 """)
         except Exception:
             pass
-        # add thinking_sticker column (migration)
-        try:
-            with db_cursor() as cur:
-                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS thinking_sticker TEXT")
-        except Exception:
-            pass
         print("Database initialized successfully.", flush=True)
     except Exception as e:
         print(f"Failed to initialize database: {e}", file=sys.stderr)
@@ -812,10 +807,14 @@ def get_token_remaining(user_id):
     return remaining, int(period_hours - hours_passed)
 
 def call_ai(messages, user_id):
+    project_mode = messages_are_project(messages)
     if is_pro_user(user_id) and _LOCAL_PRO_MODE:
         res = call_ollama(messages)
         if res:
             return res
+    if project_mode:
+        project_model = os.getenv("ZEROXAI_PROJECT_MODEL", MODEL).strip() or MODEL
+        return call_groq(messages, project_model)
     if is_pro_user(user_id):
         return call_groq(messages, "openai/gpt-oss-120b")
     return call_nvidia(messages, "meta/llama-3.1-8b-instruct")
@@ -854,7 +853,7 @@ def call_openrouter(messages, model=None):
     if not or_key:
         return call_groq(messages, "llama-3.1-8b-instant")
     model_name = model or "openai/gpt-4o-mini"
-    payload = {"model": model_name, "messages": messages, "temperature": 0.55, "top_p": 0.9}
+    payload = {"model": model_name, "messages": messages, "temperature": 0.45 if messages_are_project(messages) else 0.55, "top_p": 0.9, "max_tokens": 8192 if messages_are_project(messages) else 2048}
     body = json.dumps(payload).encode("utf-8")
     import http.client
     for attempt in range(3):
@@ -886,7 +885,7 @@ def call_nvidia(messages, model=None):
     if not nv_key:
         return call_groq(messages, "llama-3.1-8b-instant")
     model_name = model or "meta/llama-3.1-8b-instruct"
-    payload = {"model": model_name, "messages": messages, "temperature": 0.55, "top_p": 0.9}
+    payload = {"model": model_name, "messages": messages, "temperature": 0.45 if messages_are_project(messages) else 0.55, "top_p": 0.9, "max_tokens": 8192 if messages_are_project(messages) else 2048}
     body = json.dumps(payload).encode("utf-8")
     import http.client
     for attempt in range(3):
@@ -914,9 +913,9 @@ def call_nvidia(messages, model=None):
 def call_mistral(messages, model=None):
     ms_key = os.getenv("MISTRAL_API_KEY")
     if not ms_key:
-        ms_key = "tUKNfFhyw2T4PJm14WRjvy5dacmZ2lHZ"
+        return "AI временно недоступен: MISTRAL_API_KEY не настроен."
     model_name = model or "mistral-large-latest"
-    payload = {"model": model_name, "messages": messages, "temperature": 0.55, "top_p": 0.9}
+    payload = {"model": model_name, "messages": messages, "temperature": 0.45 if messages_are_project(messages) else 0.55, "top_p": 0.9, "max_tokens": 8192 if messages_are_project(messages) else 2048}
     body = json.dumps(payload).encode("utf-8")
     import http.client
     for attempt in range(3):
@@ -1026,25 +1025,6 @@ def save_histories_to_db():
 
 SSL_CONTEXT = ssl.create_default_context()
 
-THINKING_STICKERS = {}
-THINKING_STICKERS_FILE = "thinking_stickers.json"
-
-def _load_thinking_stickers():
-    global THINKING_STICKERS
-    try:
-        if os.path.exists(THINKING_STICKERS_FILE):
-            with open(THINKING_STICKERS_FILE, "r", encoding="utf-8") as f:
-                THINKING_STICKERS = json.load(f)
-    except Exception as e:
-        print(f"Failed to load thinking stickers: {e}", file=sys.stderr)
-
-def _save_thinking_stickers():
-    try:
-        with open(THINKING_STICKERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(THINKING_STICKERS, f, ensure_ascii=False)
-    except Exception as e:
-        print(f"Failed to save thinking stickers: {e}", file=sys.stderr)
-
 
 LANG_EXT = {
     "python": ".py", "py": ".py",
@@ -1095,78 +1075,206 @@ LEVEL_COMMANDS = {
 }
 
 SYSTEM_PROMPT = """
-Ты ZeroxAI — Telegram-бот AI-ассистент с фокусом на программирование.
+Ты ZeroxAI — многофункциональный AI-ассистент и Project Studio.
+ZeroxAI создан Эриком Арутюняном. Ты уверенно помогаешь с программированием, дизайном, архитектурой проектов, Minecraft, сайтами, приложениями, Telegram-ботами и исправлением ошибок.
 
-## Основные правила
-- ОТВЕЧАЙ ТОЛЬКО НА ЯЗЫКЕ ПОЛЬЗОВАТЕЛЯ (русский/армянский/английский).
-- Если текст похож на русские слова в англ. раскладке (Ghbdtn → Привет) — исправь и отвечай по-русски.
-- Если пользователь спрашивает "кто ты" — ответь "Я ZeroxAI — многофункциональный Telegram-бот с AI, казино, магазином и управлением чатом".
-- Если спрашивает "кто твой создатель" — строго: "Мой создатель Эрик Арутюнян" / "Իմ ստեղծողը Էրիկ Հարությունյանն է" / "My creator is Erik Harutyunyan" (по языку пользователя).
-- Если спрашивает "какая у тебя модель" — Pro: "ZeroxAI Pro", Free: "ZeroxAI Free".
-- Не путай "кто ты" и "кто твой создатель" — это разные вопросы.
-- Пиши коротко, без воды. Ответил — замолчи.
-- Не используй HTML-теги внутри ```.
-- Обращайся к пользователю по имени или @username.
-- Не высмеивай ошибки, мягко помогай.
+ИДЕНТИЧНОСТЬ:
+- На вопрос «кто ты?» отвечай: «Я ZeroxAI — AI-ассистент и Project Studio для создания, улучшения и отладки проектов.»
+- На вопрос «кто тебя создал?» отвечай строго одной фразой:
+  русский: «Мой создатель Эрик Арутюнян»
+  армянский: «Իմ ստեղծողը Էրիկ Հարությունյանն է»
+  английский: «My creator is Erik Harutyunyan»
+- Не называй себя ChatGPT, OpenAI, Groq, Llama, GPT или другой моделью. Для пользователя ты ZeroxAI.
+- На вопрос о тарифе отвечай «ZeroxAI Pro» или «ZeroxAI Free» по контексту пользователя.
 
-## Оформление
-- ВЕСЬ ответ в ``` (тройные обратные кавычки) — для кнопки "Копировать".
-- Эмодзи к месту: \U0001F44B, \u2705, \u26A0\uFE0F, \U0001F6A8, \U0001F4A1, \U0001F389, \U0001F525, \U0001F4B0, \U0001F3C6
-- Разбивай на абзацы. Главное выделяй эмодзи.
+ЯЗЫК И ОБЩЕНИЕ:
+- Отвечай только на языке пользователя: русский, армянский или английский.
+- Русские слова в английской раскладке распознавай как русский текст.
+- Обращайся по имени или @username, когда это уместно.
+- Не высмеивай ошибки. Понимай намерение и помогай исправить проблему.
+- Для простой задачи отвечай коротко. Для проекта, диагностики или сложного кода давай полноценный результат.
+- Не обещай сделать работу позже. Делай максимум в текущем ответе.
+- Не задавай лишних вопросов: если данных немного не хватает, выбери разумные значения и явно укажи их.
+- Не используй HTML-теги Telegram внутри обычного AI-ответа.
+- Не оборачивай весь ответ в один общий блок ```. Это ломает сборку файлов.
 
-## Режим программиста (главное)
-Когда пользователь просит код — включи режим программиста:
+ФОРМАТИРОВАНИЕ КОДА:
+- Любой исходный код, конфиг, JSON, YAML, SQL, команды терминала или содержимое файла всегда помещай в отдельный fenced-блок с тройными обратными кавычками.
+- После открывающих кавычек обязательно указывай язык: ```php, ```java, ```python, ```javascript, ```json, ```yaml, ```bash и т.д.
+- Не смешивай объяснение и код внутри одного блока. Объяснение пиши обычным текстом перед блоком.
+- Никогда не отправляй многострочный код как обычный текст без fenced-блока: Telegram должен показать отдельный блок с возможностью копирования.
+- Для полного файла по возможности указывай путь: ```php filename="src/Main.php".
+- Короткие имена команд, методов и переменных можно выделять одиночными обратными кавычками, но полноценный код всегда оформляй отдельным блоком.
 
-### 1. АНАЛИЗ ЗАДАЧИ (мысленно, не пиши этот шаг пользователю)
-- Разбери, что именно нужно сделать. Определи архитектуру: модули, классы, функции, данные.
-- Выбери язык и технологии под задачу. Подумай о безопасности, производительности, масштабируемости.
-- Если задача большая — разбей на этапы.
+РАБОТА С ПРОЕКТАМИ:
+- Сначала определи платформу, язык, ядро, версию и формат результата из запроса.
+- Не путай платформы. Paper/Spigot/Purpur/Bukkit — Java. PocketMine-MP/PMMP/Submarine/EnvyCore — PHP. Nukkit/PowerNukkitX — Java. Bedrock Add-On — behavior/resource pack и при необходимости JavaScript/TypeScript Script API.
+- Если пользователь просит исправить существующий проект, сохраняй его архитектуру и меняй только необходимое, если полная переработка не нужна.
+- Создавай реально запускаемый проект: все обязательные файлы, конфиги, manifest/plugin.yml, зависимости, README, команды запуска или сборки.
+- Не оставляй «TODO», «здесь добавьте код», многоточия вместо реализации и фиктивные функции, если пользователь не просил шаблон.
+- Проверяй согласованность имён пакетов, namespace, импортов, путей, команд, permissions, конфигов и версий API.
+- Для интерфейсов делай современный, аккуратный, адаптивный дизайн с нормальными состояниями: загрузка, ошибка, пустые данные, мобильная версия.
+- Для исправления ошибки сначала найди вероятную первопричину, затем дай исправленные файлы, а не только объяснение.
 
-### 2. ПЛАН РЕШЕНИЯ
-- Напиши структуру проекта (файлы, папки).
-- Объясни логику: как компоненты взаимодействуют, какие данные передают.
-- Назови файлы, куда вставлять код.
+ФОРМАТ ФАЙЛОВ ДЛЯ АРХИВА:
+- Каждый файл выводи отдельным fenced-блоком.
+- В первой строке блока обязательно указывай язык и точный путь:
+  ```php filename="src/ZeroxAI/Main.php"
+  ...полный код файла...
+  ```
+- Для файлов без отдельного языка используй text, json, yaml, xml, markdown или другой подходящий идентификатор.
+- Не объединяй несколько файлов в одном блоке.
+- Перед файлами напиши строку: PROJECT_NAME: короткое_имя_проекта
+- После файлов дай только краткую инструкцию запуска/установки и список важных допущений.
 
-### 3. НАПИСАНИЕ КОДА
-- Каждый файл выводи в отдельном ``` с указанием языка.
-- Если код для Minecraft плагина — ТОЛЬКО PHP (PocketMine-MP), не Java.
-- Используй современные практики: типизация (где применимо), обработка ошибок, DRY, SOLID.
-- Для веба — разделяй логику, маршруты, шаблоны, статику.
-- Для API — RESTful + JSON, статус-коды, документация.
-- Для БД — параметризованные запросы (безопасность), индексы, нормализация.
-- Для Git — показывай команды и коммиты в формате conventional commits.
+КАЧЕСТВО КОДА:
+- Пиши чистый, понятный и безопасный код с обработкой ошибок.
+- Не встраивай секретные API-ключи и токены в исходники. Используй переменные окружения и .env.example.
+- Учитывай совместимость с указанной версией языка и API.
+- Не выдумывай методы библиотек. Используй устойчивые публичные API и понятные fallback-механизмы.
+- Для больших проектов предпочитай несколько хорошо связанных файлов вместо одного огромного файла.
+- Комментарии добавляй только там, где они реально помогают.
 
-### 4. ПРОВЕРКА РЕШЕНИЯ
-- Проверь код на логические ошибки, синтаксис, утечки памяти, race conditions.
-- Проверь безопасность: нет ли SQL-инъекций, XSS, CSRF, хардкода ключей.
-- Убедись, что все импорты правильные, типы совпадают, функции вызваны с нужными аргументами.
-- Если найдёшь ошибку — исправь её и объясни, почему было неправильно.
-
-### 5. ОПТИМИЗАЦИЯ
-- Если есть более эффективное решение — предложи его с пояснением.
-- Сравни варианты: сложность O(n), память, читаемость.
-
-### 6. АНАЛИЗ ОШИБОК (если пользователь прислал ошибку)
-- Объясни причину простым языком.
-- Покажи исправленный код.
-- Скажи, как избежать такой ошибки в будущем.
-
-## Многоязычные конвенции
-- Python: PEP-8, snake_case, type hints, docstrings.
-- PHP: PSR-12, CamelCase классы, strict_types, неймспейсы.
-- JavaScript/TypeScript: ESLint, camelCase, async/await, модули ES или CommonJS.
-- C++: RAII, умные указатели, STL, const correctness.
-- Java: Java-конвенции, Maven/Gradle, Lombok, Stream API.
-- Go: gofmt, интерфейсы, горутины, обработка ошибок без panics.
-- Rust: ownership, borrow checker, unwrap/expect осознанно, cargo.
-- SQL: JOIN, индексы, EXPLAIN, транзакции, без N+1.
-
-## Что не так с твоими ответами — исправляйся
-- Если код большой — не сваливай всё в один файл. Разбей на модули/классы.
-- Если пользователь просит "сделай приложение" — дай структуру, установку, запуск, а не просто кусок кода.
-- Не используй устаревшие библиотеки/методы. Проверь актуальность.
-- Для PHP PocketMine-MP: Main.php обязателен, registerEvents, конфиг config.yml.
+ВОЗМОЖНОСТИ БОТА:
+- Чат-менеджмент: /mute, /unmute, /kick, /ban, /unban, /warn, /warns, /unwarn, /clean, /slowmode, /pin, /unpin, /welcome, /delete, /setrules, /rules
+- Казино и экономика: /coin, /dice, /roll, /slot, /allin, /bal, /top, /transfer, /shop, /buy, /free, /promo
+- Информация: /help, /about, /ping, /id, /myrole, /team, /stats, /commands, /report, /support
+- Проекты: /project <описание> или обычный запрос «создай проект/плагин/сайт/бота»
+- Pro: /mypro, /buypro, /tokens
+- Сервер/RCON: /server, /startbot, /stopbot, /statbot
 """.strip()
+
+PROJECT_BASE_PROMPT = """
+ZEROX_PROJECT_MODE
+Ты работаешь в режиме ZeroxAI Project Studio. Результат должен быть пригоден для автоматической сборки ZIP-архива.
+
+Обязательные требования:
+1. Выдай законченную реализацию, а не демонстрационный фрагмент.
+2. Начни с `PROJECT_NAME: имя_проекта` латиницей без пробелов.
+3. Каждый файл выдай отдельным блоком вида ```язык filename="путь/к/файлу.ext".
+4. Пути должны быть относительными, без `..`, абсолютных путей и дубликатов.
+5. Добавь README.md с установкой, запуском/сборкой, требованиями и краткой структурой.
+6. Добавь .env.example, если проект использует токены, БД или внешние API. Реальные секреты не вставляй.
+7. Не сокращай код словами «остальное аналогично», не оставляй TODO и заглушки.
+8. Учитывай предыдущие сообщения: при доработке возвращай все изменённые файлы целиком.
+9. В конце коротко перечисли, что реализовано и как запустить.
+10. Если объём очень большой, в первую очередь обеспечь полностью рабочее ядро проекта и критические файлы, а не множество пустых модулей.
+""".strip()
+
+PROJECT_KIND_PROMPTS = {
+    "mcbe_php": """
+Специализация: плагины Minecraft Bedrock/MCPE для PocketMine-MP и PHP-ядер.
+- PocketMine-MP, PMMP, Submarine, EnvyCore и их форки используют PHP-плагин, если пользователь явно не указал иное.
+- Обязательно создай plugin.yml, корректный src/namespace, главный класс PluginBase и resources/config.yml, когда нужен конфиг.
+- Учитывай точную версию ядра/API и версию PHP. Для старых ядер не используй синтаксис и API новых PMMP.
+- Не подменяй API одного ядра другим. Если ядро нестандартное, опирайся на названия классов и стиль API из контекста пользователя.
+- Команды должны иметь permissions, usage, aliases при необходимости; события регистрируй в onEnable.
+- Сохраняй данные безопасно: YAML/JSON/SQLite в зависимости от задачи, с созданием каталогов и обработкой отсутствующих ключей.
+- Для многоверсионных серверов не используй новые блоки/предметы без fallback, если пользователь просит поддержку старых клиентов.
+- Добавь README с установкой .phar/исходников и совместимостью. Не утверждай, что PHAR уже скомпилирован, если выдаёшь только исходники.
+""".strip(),
+    "nukkit": """
+Специализация: Minecraft Bedrock-серверы Nukkit/PowerNukkitX.
+- Используй Java и API указанного ядра, plugin.yml, Maven или Gradle, корректный main class.
+- Не смешивай Nukkit API с Bukkit/Paper или PocketMine.
+- Добавь pom.xml/build.gradle, README и настройки ресурсов.
+""".strip(),
+    "bedrock_addon": """
+Специализация: Minecraft Bedrock Add-On.
+- Создавай behavior_pack и при необходимости resource_pack с корректными manifest.json, UUID, min_engine_version и зависимостями.
+- Для Script API используй JavaScript/TypeScript и только совместимые модули @minecraft/server для указанной версии.
+- Добавь функции, entities, items, blocks, recipes, texts и textures только когда они нужны задаче.
+- README должен объяснять импорт .mcpack/.mcaddon и включение экспериментальных функций, если они действительно требуются.
+""".strip(),
+    "minecraft_java": """
+Специализация: Minecraft Java Edition plugins/mods/datapacks.
+- Paper/Spigot/Purpur/Bukkit — Java plugin с plugin.yml и Gradle/Maven.
+- Fabric/Forge/NeoForge — мод с соответствующим loader metadata и build-конфигурацией.
+- Datapack — pack.mcmeta и data namespace без Java-классов.
+- Не смешивай Bukkit API, Fabric API и Bedrock/PocketMine API.
+""".strip(),
+    "telegram_bot": """
+Специализация: Telegram-боты.
+- Выбирай библиотеку из запроса; для Python предпочтительно современное aiogram 3.x, если версия не задана.
+- Разделяй handlers, services, storage/config, добавляй .env.example, requirements.txt и обработку ошибок.
+- Не вставляй токен в код. Учитывай private/group chats, callback queries, права и rate limiting.
+""".strip(),
+    "web": """
+Специализация: сайты и web-приложения.
+- Делай адаптивный интерфейс для телефона и ПК, семантическую разметку, доступность и понятную навигацию.
+- Не используй несуществующие изображения. Для локальных assets добавляй понятные placeholders или генеративные CSS/SVG элементы.
+- Проверяй, что HTML/CSS/JS пути совпадают и приложение запускается без сборщика, если пользователь просит один index.html.
+""".strip(),
+    "android": """
+Специализация: Android-проекты.
+- Указывай совместимые Gradle/AGP/JDK/minSdk/targetSdk, manifest permissions и структуру модулей.
+- Для камеры, файлов, Bluetooth и других разрешений реализуй runtime permission flow.
+- Не выдумывай ресурсы и зависимости; добавляй полный settings.gradle(.kts), build files и README.
+""".strip(),
+    "generic": """
+Специализация: универсальная разработка проектов.
+- Выбери понятную архитектуру, минимально необходимые зависимости, конфигурацию запуска и тестовый сценарий.
+- Обеспечь согласованность всех файлов и реальную точку входа.
+""".strip(),
+}
+
+PROJECT_CREATE_WORDS = (
+    "создай", "сделай", "напиши", "собери", "разработай", "реализуй", "добавь",
+    "create", "build", "make", "develop", "implement", "generate",
+)
+PROJECT_NOUNS = (
+    "проект", "плагин", "plugin", "сайт", "website", "бот", "bot", "приложение", "app",
+    "игру", "game", "датапак", "datapack", "мод", "mod", "аддон", "addon", "архив", "zip",
+    "api", "скрипт", "script", "ядро", "core",
+)
+PROJECT_FOLLOWUP_WORDS = (
+    "исправь", "почини", "улучши", "доработай", "обнови", "не работает", "ошибка", "баг",
+    "fix", "repair", "improve", "update", "bug", "broken",
+)
+
+
+def _history_has_project(history):
+    recent = " ".join(str(item.get("content", "")) for item in history[-8:]).lower()
+    return any(noun in recent for noun in PROJECT_NOUNS) or "project_name:" in recent
+
+
+def detect_project_kind(user_text, history=None, force_project=False):
+    history = history or []
+    lower = (user_text or "").lower()
+    combined = lower + " " + " ".join(str(item.get("content", "")).lower() for item in history[-6:])
+
+    explicit_create = any(word in lower for word in PROJECT_CREATE_WORDS) and any(noun in lower for noun in PROJECT_NOUNS)
+    explicit_project = any(token in lower for token in ("/project", "project_name:", "полный проект", "готовый проект", "в архив"))
+    followup = any(word in lower for word in PROJECT_FOLLOWUP_WORDS) and _history_has_project(history)
+    if not (force_project or explicit_create or explicit_project or followup):
+        return None
+
+    if any(x in combined for x in ("paper", "spigot", "purpur", "bukkit", "fabric", "forge", "neoforge", "java edition", "minecraft java")):
+        return "minecraft_java"
+    if any(x in combined for x in ("nukkit", "powernukkit", "powernukkitx")):
+        return "nukkit"
+    if any(x in combined for x in ("behavior pack", "resource pack", "behavior_pack", "resource_pack", "mcaddon", "mcpack", "bedrock add-on", "bedrock addon", "script api", "@minecraft/server")):
+        return "bedrock_addon"
+    if any(x in combined for x in ("pocketmine", "pmmp", "submarine", "envycore", "mcpe", "minecraft pe", "minecraft bedrock", ".phar", "plugin.yml")) and not any(x in combined for x in ("paper", "spigot", "purpur", "bukkit")):
+        return "mcbe_php"
+    if "minecraft" in combined and any(x in combined for x in ("плагин", "plugin", "датапак", "datapack", "мод", "mod")):
+        return "generic"
+    if any(x in combined for x in ("telegram", "телеграм", "aiogram", "pyrogram", "telebot")):
+        return "telegram_bot"
+    if any(x in combined for x in ("android", "apk", "gradle", "kotlin", "android studio")):
+        return "android"
+    if any(x in combined for x in ("html", "css", "javascript", "typescript", "react", "vue", "сайт", "website", "лендинг", "frontend", "web app")):
+        return "web"
+    return "generic"
+
+
+def build_project_instruction(kind):
+    return PROJECT_BASE_PROMPT + "\n\n" + PROJECT_KIND_PROMPTS.get(kind or "generic", PROJECT_KIND_PROMPTS["generic"])
+
+
+def messages_are_project(messages):
+    return any(msg.get("role") == "system" and "ZEROX_PROJECT_MODE" in str(msg.get("content", "")) for msg in messages)
+
 
 
 def get_env(name):
@@ -1426,7 +1534,14 @@ def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None, reply_
 
 
 def _menu_kb():
-    return {"keyboard": [[{"text": "\u2B50 Подписка"}, {"text": "\U0001F916 Токены"}]], "resize_keyboard": True}
+    return {
+        "keyboard": [
+            [{"text": "🚀 Создать проект"}, {"text": "✨ Возможности"}],
+            [{"text": "⭐ Подписка"}, {"text": "🤖 Токены"}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
 
 
 def edit_message(token, chat_id, message_id, text, parse_mode=None):
@@ -1454,7 +1569,7 @@ def split_message(text):
     return [text[index:index + MAX_TELEGRAM_MESSAGE] for index in range(0, len(text), MAX_TELEGRAM_MESSAGE)]
 
 
-def build_messages(chat_id, user_text, username=None, first_name=None, user_id=None):
+def build_messages(chat_id, user_text, username=None, first_name=None, user_id=None, force_project=False):
     history = USER_HISTORIES.get(chat_id, [])[-MAX_HISTORY_MESSAGES:]
     user_ref = first_name or username or "Пользователь"
     context = f"С тобой говорит {user_ref}."
@@ -1462,7 +1577,14 @@ def build_messages(chat_id, user_text, username=None, first_name=None, user_id=N
         context += f" Его юзернейм: @{username}."
     if user_id and is_pro_user(user_id):
         context += " У пользователя Pro-подписка."
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context}, *history, {"role": "user", "content": user_text}]
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context}]
+    project_kind = detect_project_kind(user_text, history, force_project=force_project)
+    if project_kind:
+        messages.append({"role": "system", "content": build_project_instruction(project_kind)})
+    messages.extend(history)
+    messages.append({"role": "user", "content": user_text})
+    return messages
 
 
 def remember(chat_id, user_text, assistant_text):
@@ -1707,7 +1829,7 @@ def call_groq(messages, model=None):
     if not api_keys:
         return "Ошибка: добавьте ZEROXAI_API_KEYS в переменные окружения."
     model_name = model or MODEL
-    payload = {"model": model_name, "messages": messages, "temperature": 0.55, "top_p": 0.9}
+    payload = {"model": model_name, "messages": messages, "temperature": 0.45 if messages_are_project(messages) else 0.55, "top_p": 0.9, "max_tokens": 8192 if messages_are_project(messages) else 2048}
     body = json.dumps(payload).encode("utf-8")
     last_error = "Все API-ключи не сработали."
     for attempt in range(len(api_keys)):
@@ -1787,60 +1909,411 @@ def extract_error_message(raw):
 
 
 def parse_code_blocks(text):
-    pattern = r"```(\w[^`]*?)?\n(.*?)```"
-    matches = re.findall(pattern, text, re.DOTALL)
+    """Parse fenced code blocks and preserve exact project file paths."""
+    pattern = re.compile(r"```([^\n`]*)\n(.*?)```", re.DOTALL)
     result = []
-    for header, code in matches:
-        header = (header or "").strip()
-        lang = header.split()[0] if header else ""
+    for match in pattern.finditer(text or ""):
+        header = (match.group(1) or "").strip()
+        code = match.group(2).strip("\n")
+        parts = header.split()
+        lang = parts[0].lower() if parts else "text"
         filename = ""
-        fm = re.search(r'filename=(["\']?)([^"\' ]+)\1', header)
+
+        fm = re.search(r'(?:filename|file|path)\s*=\s*(["\'])(.+?)\1', header, re.IGNORECASE)
+        if not fm:
+            fm = re.search(r'(?:filename|file|path)\s*=\s*([^\s]+)', header, re.IGNORECASE)
         if fm:
-            filename = fm.group(2)
-        result.append((lang, filename, code.strip()))
+            filename = fm.group(2 if fm.lastindex and fm.lastindex >= 2 else 1).strip()
+
+        if not filename:
+            first_lines = "\n".join(code.splitlines()[:3])
+            fm = re.search(r'^\s*(?://|#|;|<!--)\s*(?:filename|file|path)\s*:\s*([^\n>]+)', first_lines, re.IGNORECASE | re.MULTILINE)
+            if fm:
+                filename = fm.group(1).strip()
+
+        result.append((lang, filename, code))
     return result
 
 
 def has_code_blocks(text):
-    if "```" not in text:
+    if "```" not in (text or ""):
         return False
     blocks = parse_code_blocks(text)
     if not blocks:
         return False
     for lang, filename, code in blocks:
-        if lang:
+        if filename or (lang and lang != "text"):
             return True
-        if not code or len(code) < 10:
-            continue
-        if re.search(r"[{}();\[\]<>]|\b(function|class|def|if|for|while|import|echo|return|<?php)\b", code):
+        if code and len(code) >= 10 and re.search(r"[{}();\[\]<>]|\b(function|class|def|if|for|while|import|echo|return|<\?php)\b", code):
             return True
     return False
 
 
 def get_file_extension(lang):
-    ext = LANG_EXT.get(lang.lower())
+    ext = LANG_EXT.get((lang or "text").lower())
     return ext if ext is not None else (f".{lang}" if lang else ".txt")
 
 
-def create_project_zip(blocks):
+def _safe_project_path(filename, fallback):
+    name = (filename or fallback).replace("\\", "/").strip().lstrip("/")
+    parts = [part for part in name.split("/") if part not in ("", ".", "..")]
+    cleaned = "/".join(parts)
+    cleaned = re.sub(r"[\x00-\x1f:*?\"<>|]", "_", cleaned)
+    return cleaned[:240] or fallback
+
+
+def _project_slug(value):
+    value = (value or "zeroxai_project").strip().lower()
+    value = re.sub(r"[^a-z0-9._-]+", "_", value, flags=re.IGNORECASE)
+    value = re.sub(r"_+", "_", value).strip("._-")
+    return (value or "zeroxai_project")[:64]
+
+
+def extract_project_name(answer, user_text=""):
+    match = re.search(r"^\s*PROJECT_NAME\s*:\s*([^\n]+)", answer or "", re.IGNORECASE | re.MULTILINE)
+    if match:
+        return _project_slug(match.group(1))
+    words = re.findall(r"[A-Za-z0-9_-]+", user_text or "")
+    if words:
+        return _project_slug("_".join(words[:5]))
+    return "zeroxai_project"
+
+
+def create_project_zip(blocks, project_name="zeroxai_project", source_request=""):
     buf = io.BytesIO()
+    used = set()
+    files_written = []
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for i, (lang, filename, code) in enumerate(blocks):
-            if not filename:
-                ext = get_file_extension(lang)
-                filename = f"file_{i + 1}{ext}"
-            zf.writestr(filename, code)
+            ext = get_file_extension(lang)
+            fallback = f"file_{i + 1}{ext}"
+            safe_name = _safe_project_path(filename, fallback)
+            base_name = safe_name
+            duplicate = 2
+            while safe_name.lower() in used:
+                stem, suffix = os.path.splitext(base_name)
+                safe_name = f"{stem}_{duplicate}{suffix}"
+                duplicate += 1
+            used.add(safe_name.lower())
+            zf.writestr(safe_name, code)
+            files_written.append(safe_name)
+
+        if not any(name.lower() in ("readme.md", "readme.txt") or name.lower().endswith("/readme.md") for name in files_written):
+            readme = (
+                f"# {project_name}\n\n"
+                "Проект автоматически собран ZeroxAI Project Studio.\n\n"
+                "## Файлы\n" + "\n".join(f"- `{name}`" for name in files_written) + "\n\n"
+                "## Исходный запрос\n" + (source_request.strip() or "Не указан") + "\n"
+            )
+            zf.writestr("README_ZeroxAI.md", readme)
     return buf.getvalue()
+
+
+def project_display_text(answer, blocks, project_name):
+    without_code = re.sub(r"```[^\n`]*\n.*?```", "", answer or "", flags=re.DOTALL)
+    without_code = re.sub(r"^\s*PROJECT_NAME\s*:[^\n]*", "", without_code, flags=re.IGNORECASE | re.MULTILINE)
+    without_code = re.sub(r"\n{3,}", "\n\n", without_code).strip()
+    filenames = []
+    for index, (lang, filename, code) in enumerate(blocks):
+        filenames.append(_safe_project_path(filename, f"file_{index + 1}{get_file_extension(lang)}"))
+    file_preview = "\n".join(f"• {name}" for name in filenames[:12])
+    if len(filenames) > 12:
+        file_preview += f"\n• … ещё {len(filenames) - 12}"
+    intro = f"✅ Проект `{project_name}` собран: {len(filenames)} {_russian_file_word(len(filenames))}."
+    details = f"\n\n{without_code}" if without_code else ""
+    listing = f"\n\n📁 Состав архива:\n{file_preview}" if filenames else ""
+    return intro + details + listing
+
+
+def validate_project_blocks(kind, blocks):
+    """Return critical issues that make an automatically generated project incomplete."""
+    issues = []
+    if not blocks:
+        return ["Ответ не содержит ни одного файла в fenced-блоках."]
+
+    normalized = []
+    seen = set()
+    for index, (lang, filename, code) in enumerate(blocks):
+        safe_name = _safe_project_path(filename, f"file_{index + 1}{get_file_extension(lang)}")
+        lower_name = safe_name.lower()
+        normalized.append(lower_name)
+        if not filename:
+            issues.append(f"У файла №{index + 1} не указано filename=...")
+        if lower_name in seen:
+            issues.append(f"Повторяется путь файла: {safe_name}")
+        seen.add(lower_name)
+        if not (code or "").strip():
+            issues.append(f"Файл {safe_name} пустой.")
+        if re.search(r"\bTODO\b|остальн(?:ое|ые)\s+аналогично|здесь\s+(?:добавьте|вставьте)\s+код", code or "", re.IGNORECASE):
+            issues.append(f"В файле {safe_name} осталась заглушка/TODO.")
+
+    def has_name(name):
+        name = name.lower()
+        return any(item == name or item.endswith("/" + name) for item in normalized)
+
+    def has_suffix(suffix):
+        suffix = suffix.lower()
+        return any(item.endswith(suffix) for item in normalized)
+
+    if kind == "mcbe_php":
+        if not has_name("plugin.yml"):
+            issues.append("Для PocketMine/MCPE-плагина отсутствует plugin.yml.")
+        if not any(item.endswith(".php") for item in normalized):
+            issues.append("Для PocketMine/MCPE-плагина отсутствуют PHP-файлы.")
+    elif kind == "nukkit":
+        if not has_name("plugin.yml"):
+            issues.append("Для Nukkit-плагина отсутствует plugin.yml.")
+        if not any(item.endswith(".java") for item in normalized):
+            issues.append("Для Nukkit-плагина отсутствуют Java-файлы.")
+        if not (has_name("pom.xml") or has_name("build.gradle") or has_name("build.gradle.kts")):
+            issues.append("Для Nukkit-плагина отсутствует Maven/Gradle-конфигурация.")
+    elif kind == "minecraft_java":
+        is_datapack = has_name("pack.mcmeta")
+        if not is_datapack and not any(item.endswith(".java") for item in normalized):
+            issues.append("Для Java-проекта Minecraft отсутствуют Java-файлы или pack.mcmeta.")
+        if not is_datapack and not (has_name("pom.xml") or has_name("build.gradle") or has_name("build.gradle.kts")):
+            issues.append("Для Java-проекта Minecraft отсутствует Maven/Gradle-конфигурация.")
+    elif kind == "bedrock_addon":
+        manifests = [item for item in normalized if item.endswith("manifest.json")]
+        if not manifests:
+            issues.append("Для Bedrock Add-On отсутствует manifest.json.")
+    elif kind == "web":
+        if not has_name("index.html") and not any(item.endswith((".tsx", ".jsx", ".vue")) for item in normalized):
+            issues.append("Для web-проекта отсутствует index.html или основной компонент приложения.")
+    elif kind == "telegram_bot":
+        if not any(item.endswith(".py") for item in normalized):
+            issues.append("Для Telegram-бота отсутствуют Python-файлы.")
+        if not (has_name("requirements.txt") or has_name("pyproject.toml")):
+            issues.append("Для Telegram-бота отсутствует requirements.txt или pyproject.toml.")
+    elif kind == "android":
+        if not has_suffix("androidmanifest.xml"):
+            issues.append("Для Android-проекта отсутствует AndroidManifest.xml.")
+        if not (has_name("settings.gradle") or has_name("settings.gradle.kts")):
+            issues.append("Для Android-проекта отсутствует settings.gradle(.kts).")
+
+    if not any(item.endswith("readme.md") or item.endswith("readme.txt") for item in normalized):
+        issues.append("Отсутствует README с установкой и запуском.")
+    return issues
+
+
+def _project_answer_score(kind, answer):
+    blocks = parse_code_blocks(answer) if has_code_blocks(answer) else []
+    issues = validate_project_blocks(kind, blocks)
+    named = sum(1 for _lang, filename, code in blocks if filename and (code or "").strip())
+    return named * 10 + len(blocks) * 2 - len(issues) * 20
+
+
+def repair_project_answer(ai_messages, answer, kind, user_id):
+    """Run one bounded self-review pass when critical project files are missing."""
+    if os.getenv("ZEROXAI_PROJECT_SELF_REVIEW", "1").strip().lower() in ("0", "false", "off", "no"):
+        return answer
+    blocks = parse_code_blocks(answer) if has_code_blocks(answer) else []
+    issues = validate_project_blocks(kind, blocks)
+    if not issues:
+        return answer
+
+    issue_text = "\n".join(f"- {issue}" for issue in issues[:12])
+    repair_prompt = (
+        "Проведи финальную самопроверку проекта. Ниже обнаружены критические проблемы:\n"
+        f"{issue_text}\n\n"
+        "Верни заново ВЕСЬ исправленный проект, а не патч. Соблюдай PROJECT_NAME и отдельный "
+        "fenced-блок с filename= для каждого файла. Удали TODO и обеспечь согласованность путей, "
+        "namespace/package, конфигов, команд и зависимостей."
+    )
+    repair_messages = [*ai_messages, {"role": "assistant", "content": answer}, {"role": "user", "content": repair_prompt}]
+    repaired = call_ai(repair_messages, user_id)
+    if _project_answer_score(kind, repaired) > _project_answer_score(kind, answer):
+        return repaired
+    return answer
+
+
+def _russian_file_word(count):
+    count = abs(int(count)) % 100
+    last = count % 10
+    if 11 <= count <= 19:
+        return "файлов"
+    if last == 1:
+        return "файл"
+    if 2 <= last <= 4:
+        return "файла"
+    return "файлов"
+
+
+def _telegram_code_language(lang):
+    """Return a safe Telegram language hint for syntax highlighting."""
+    value = (lang or "text").strip().lower()
+    aliases = {
+        "py": "python", "js": "javascript", "ts": "typescript",
+        "yml": "yaml", "sh": "bash", "shell": "bash",
+        "c++": "cpp", "cs": "csharp", "html5": "html",
+        "txt": "text", "md": "markdown",
+    }
+    value = aliases.get(value, value)
+    value = re.sub(r"[^a-z0-9_+.#-]", "", value)
+    return value[:32] or "text"
+
+
+def _split_code_for_telegram_html(code, max_escaped_length=3000):
+    """Split code without breaking Telegram HTML <pre> wrappers."""
+    code = (code or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not code:
+        return [""]
+
+    chunks = []
+    current = ""
+    for line in code.splitlines(keepends=True):
+        candidate = current + line
+        if current and len(html.escape(candidate)) > max_escaped_length:
+            chunks.append(current.rstrip("\n"))
+            current = line
+        else:
+            current = candidate
+
+        while len(html.escape(current)) > max_escaped_length:
+            low, high = 1, len(current)
+            best = 1
+            while low <= high:
+                mid = (low + high) // 2
+                if len(html.escape(current[:mid])) <= max_escaped_length:
+                    best = mid
+                    low = mid + 1
+                else:
+                    high = mid - 1
+            chunks.append(current[:best])
+            current = current[best:]
+
+    if current or not chunks:
+        chunks.append(current.rstrip("\n"))
+    return chunks
+
+
+def _looks_like_standalone_code(text):
+    """Conservative fallback for model responses that forgot fenced blocks."""
+    value = (text or "").strip()
+    if not value or "\n" not in value or len(value) < 24:
+        return False
+    lines = [line for line in value.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    code_hits = sum(bool(re.search(
+        r"^\s*(?:import\s+|from\s+\S+\s+import\s+|class\s+\w+|def\s+\w+|function\s+\w+|"
+        r"(?:public|private|protected|static|final|const|let|var)\s+|<\?php|<!DOCTYPE|<html|"
+        r"SELECT\s+|INSERT\s+|UPDATE\s+|CREATE\s+TABLE|package\s+|namespace\s+|#include\s*[<\"]|"
+        r"[}\]);]\s*$)", line, re.IGNORECASE
+    )) for line in lines)
+    symbols = len(re.findall(r"[{}();=\[\]<>]", value))
+    return code_hits >= 2 or (code_hits >= 1 and symbols >= 5)
+
+
+def _send_plain_ai_text(token, chat_id, text, reply_to_msg_id=None):
+    first_message_id = None
+    for chunk in split_message((text or "").strip()):
+        if not chunk:
+            continue
+        payload = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "disable_web_page_preview": True,
+        }
+        if reply_to_msg_id and first_message_id is None:
+            payload["reply_to_message_id"] = reply_to_msg_id
+        result = telegram_request(token, "sendMessage", payload)
+        if first_message_id is None and result.get("ok"):
+            first_message_id = result.get("result", {}).get("message_id")
+    return first_message_id
+
+
+def _send_copyable_code_block(token, chat_id, code, lang="text", filename="", reply_to_msg_id=None):
+    """Send code as Telegram HTML <pre>, which gives a native copy action."""
+    first_message_id = None
+    language = _telegram_code_language(lang)
+    safe_filename = html.escape(filename or "")
+    parts = _split_code_for_telegram_html(code)
+
+    for index, part in enumerate(parts):
+        title = ""
+        if safe_filename:
+            suffix = f" ({index + 1}/{len(parts)})" if len(parts) > 1 else ""
+            title = f"📄 <code>{safe_filename}</code>{suffix}\n"
+        elif len(parts) > 1:
+            title = f"🧩 Код ({index + 1}/{len(parts)})\n"
+
+        escaped_code = html.escape(part)
+        body = f'{title}<pre><code class="language-{language}">{escaped_code}</code></pre>'
+        payload = {
+            "chat_id": chat_id,
+            "text": body,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if reply_to_msg_id and first_message_id is None:
+            payload["reply_to_message_id"] = reply_to_msg_id
+        result = telegram_request(token, "sendMessage", payload)
+        if first_message_id is None and result.get("ok"):
+            first_message_id = result.get("result", {}).get("message_id")
+    return first_message_id
+
+
+def send_ai_formatted_response(token, chat_id, answer, reply_to_msg_id=None):
+    """Send prose normally and fenced code as native copyable Telegram blocks."""
+    answer = answer or "Пустой ответ от модели."
+    pattern = re.compile(r"```([^\n`]*)\n(.*?)```", re.DOTALL)
+    matches = list(pattern.finditer(answer))
+
+    if not matches:
+        if _looks_like_standalone_code(answer):
+            return _send_copyable_code_block(
+                token, chat_id, answer.strip(), "text", reply_to_msg_id=reply_to_msg_id
+            )
+        return _send_plain_ai_text(token, chat_id, answer, reply_to_msg_id)
+
+    first_message_id = None
+    cursor = 0
+    for match in matches:
+        prose = answer[cursor:match.start()].strip()
+        if prose:
+            sent_id = _send_plain_ai_text(
+                token, chat_id, prose,
+                reply_to_msg_id if first_message_id is None else None,
+            )
+            first_message_id = first_message_id or sent_id
+
+        header = (match.group(1) or "").strip()
+        code = match.group(2).strip("\n")
+        parsed = parse_code_blocks(match.group(0))
+        if parsed:
+            lang, filename, code = parsed[0]
+        else:
+            parts = header.split()
+            lang = parts[0] if parts else "text"
+            filename = ""
+
+        sent_id = _send_copyable_code_block(
+            token, chat_id, code, lang, filename,
+            reply_to_msg_id if first_message_id is None else None,
+        )
+        first_message_id = first_message_id or sent_id
+        cursor = match.end()
+
+    tail = answer[cursor:].strip()
+    if tail:
+        sent_id = _send_plain_ai_text(
+            token, chat_id, tail,
+            reply_to_msg_id if first_message_id is None else None,
+        )
+        first_message_id = first_message_id or sent_id
+
+    return first_message_id
 
 
 def send_code_prompt(token, chat_id, reply_to_msg_id):
     payload = {
         "chat_id": chat_id,
-        "text": "В ответе найден код. Как отправить?",
+        "text": "✅ Код выше оформлен блоком — нажмите на него, чтобы скопировать. Дополнительно отправить?",
         "reply_markup": {
             "inline_keyboard": [[
-                {"text": "\U0001F4C4 Файлом", "callback_data": "code_file"},
-                {"text": "\U0001F4DD Текстом", "callback_data": "code_text"},
+                {"text": "📦 ZIP-файлом", "callback_data": "code_file"},
+                {"text": "📋 Повторить блоками", "callback_data": "code_text"},
             ]]
         },
     }
@@ -1857,16 +2330,17 @@ def send_document(token, chat_id, file_bytes, filename):
 
 
 def send_code_blocks_as_text(token, chat_id, blocks, reply_to_msg_id):
+    first = True
     for lang, filename, code in blocks:
-        header = f"Файл: {filename}" if filename else (f"Язык: {lang}" if lang else "Код")
-        text = f"{header}\n\n```\n{code}\n```"
-        chunks = split_message(text)
-        for chunk in chunks:
-            telegram_request(token, "sendMessage", {
-                "chat_id": chat_id, "text": chunk,
-                "disable_web_page_preview": True,
-                "reply_to_message_id": reply_to_msg_id,
-            })
+        _send_copyable_code_block(
+            token,
+            chat_id,
+            code,
+            lang,
+            filename,
+            reply_to_msg_id if first else None,
+        )
+        first = False
 
 
 def handle_callback_query(token, callback_query):
@@ -1980,7 +2454,6 @@ KNOWN_COMMANDS = {
     "/hide", "/savehistory", "/answer",
     "/giveall", "/addcoin", "/testshop", "/logs", "/setsub",
     "/setlocalmodel", "/trainmodel",
-    "/setthinking", "/setwebhook",
 }
 
 def should_respond(message):
@@ -2260,13 +2733,6 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 save_data()
                 status = "\u2705 скрыто" if bool_val else "\u274C видно"
                 reply(f"\U0001F512 '{feature}' {status}.")
-                return True
-
-            if cmd == "/setwebhook":
-                if set_webhook(token):
-                    reply("\u2705 Webhook переустановлен.")
-                else:
-                    reply("\u274C Не удалось установить webhook (бота нет на Railway/Fly/Render).")
                 return True
 
             if cmd == "/stopcasino":
@@ -2633,24 +3099,30 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             return True
 
         if cmd in ("/start", "/help"):
+            name = user.get("first_name") or user.get("username") or "пользователь"
             reply(
-                "\U0001F916 ZeroxAI Bot — многофункциональный AI-ассистент и чат-менеджер.\n"
-                f"Команды: /commands\n"
-                "Просто напиши вопрос или задачу — я отвечу как AI.",
-                reply_markup={
-                    "keyboard": [
-                        [{"text": "\u2B50 Подписка"}, {"text": "\U0001F916 Токены"}],
-                    ],
-                    "resize_keyboard": True,
-                }
+                f"⚡ ZEROXAI PROJECT STUDIO\n\n"
+                f"Привет, {name}! Я создаю и исправляю полноценные проекты:\n"
+                "🧩 MCBE/MCPE, PocketMine, Nukkit и Java-плагины\n"
+                "🌐 сайты и web-приложения\n"
+                "🤖 Telegram-боты и Python-проекты\n"
+                "📱 Android-приложения\n"
+                "🛠 диагностика ошибок и сборка ZIP-архивов\n\n"
+                "Напиши задачу обычным сообщением или используй:\n"
+                "/project <подробное описание>\n\n"
+                "Создатель: Эрик Арутюнян",
+                reply_markup=_menu_kb(),
             )
             return True
 
         if cmd == "/about":
-            reply("ZeroxAI Bot v2.0 — AI-ассистент + управление чатом.\n"
-                  "Создатель: Эрик Арутюнян.\n"
-                  "\u2705 Бесплатная версия: ZeroxAI Free\n"
-                   "\u2B50 Pro: ZeroxAI Pro (мощнее)")
+            reply(
+                "⚡ ZeroxAI v3.0\n\n"
+                "AI-ассистент и Project Studio для разработки, дизайна и отладки проектов.\n"
+                "Создатель: Эрик Арутюнян\n\n"
+                "✅ ZeroxAI Free — обычные ответы и проекты\n"
+                "⭐ ZeroxAI Pro — более мощная модель и увеличенные лимиты"
+            )
             return True
 
         if cmd == "/mypro":
@@ -2818,6 +3290,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                      "",
                      "Доступны всем (уровень 1):",
                      "/start /help — помощь",
+                     "/project <описание> — собрать полноценный ZIP-проект",
                      "/about — о боте",
                      "/ping — проверка",
                      "/id — ID чата/пользователя",
@@ -3320,29 +3793,6 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if fid not in STICKER_POOL:
                 STICKER_POOL.append(fid)
             reply(f"\u2705 Стикер добавлен в пул ({len(STICKER_POOL)} шт.)")
-            return True
-
-        if cmd == "/setthinking":
-            reply_msg = message.get("reply_to_message")
-            if reply_msg and reply_msg.get("sticker"):
-                fid = reply_msg["sticker"]["file_id"]
-            elif args:
-                fid = args[0]
-            else:
-                reply("Ответьте на стикер или отправьте file_id.")
-                return True
-            THINKING_STICKERS[str(user_id)] = fid
-            _save_thinking_stickers()
-            reply("\u2705 Стикер \"думаю\" сохран\u0451н!")
-            return True
-            try:
-                with db_cursor() as cur:
-                    cur.execute("UPDATE users SET thinking_sticker = %s WHERE user_id = %s", (fid, user_id))
-                    if cur.rowcount == 0:
-                        cur.execute("INSERT INTO users (user_id, thinking_sticker) VALUES (%s, %s)", (user_id, fid))
-                reply("\u2705 Стикер \"думаю\" сохран\u0451н!")
-            except Exception as e:
-                reply(f"\u274C Ошибка: {e}")
             return True
 
         if cmd == "/report":
@@ -4076,7 +4526,21 @@ def handle_message(token, message):
         reply_message(token, chat_id, f"\u274C Ошибка RCON: {e}", message.get("message_id"))
         return
 
-    if text.startswith("/"):
+    force_project = False
+    if text.lower().startswith("/project"):
+        description = text[len(text.split()[0]):].strip() if text.split() else ""
+        if not description:
+            reply_message(
+                token,
+                chat_id,
+                "🚀 Опишите проект после команды.\n\nПример:\n/project Создай плагин PocketMine-MP 5 для системы авторизации с config.yml и README",
+                message.get("message_id"),
+                reply_markup=_menu_kb(),
+            )
+            return
+        text = description
+        force_project = True
+    elif text.startswith("/"):
         cmd_name = text.split()[0]
         if "@" in cmd_name:
             text = text.replace(cmd_name, cmd_name.split("@")[0], 1)
@@ -4086,8 +4550,32 @@ def handle_message(token, message):
 
     # handle reply keyboard buttons
     km = _menu_kb()
-    if text in ("\u2B50 Подписка", "\U0001F916 Токены"):
-        if text == "\u2B50 Подписка":
+    if text == "🚀 Создать проект":
+        reply_message(
+            token,
+            chat_id,
+            "🚀 Напишите, что нужно создать. Укажите платформу, версию и функции.\n\nПример: `Создай плагин для PocketMine-MP 5.0 с командами /login и /register, конфигом и README`",
+            message.get("message_id"),
+            reply_markup=km,
+        )
+        return
+    if text == "✨ Возможности":
+        reply_message(
+            token,
+            chat_id,
+            "✨ Возможности ZeroxAI\n\n"
+            "• полноценные ZIP-проекты\n"
+            "• MCBE/MCPE: PocketMine, Submarine, EnvyCore, Nukkit, Add-Ons\n"
+            "• Minecraft Java: Paper, Purpur, Fabric, datapacks\n"
+            "• сайты, игры, Telegram-боты и Android\n"
+            "• исправление багов по коду и логам\n"
+            "• адаптивный UI/UX и документация",
+            message.get("message_id"),
+            reply_markup=km,
+        )
+        return
+    if text in ("⭐ Подписка", "🤖 Токены", "\u2B50 Подписка", "\U0001F916 Токены"):
+        if text in ("⭐ Подписка", "\u2B50 Подписка"):
             if is_pro_user(user_id):
                 days = pro_days_left(user_id)
                 reply_message(token, chat_id,
@@ -4109,9 +4597,25 @@ def handle_message(token, message):
                 f"\U0001F916 Токены ({tier}):\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\nВосстановление: {hours_left}h / {period}h", None, reply_markup=km)
         return
 
+    # Build the AI request once. Project mode receives a stronger coding prompt.
+    ai_messages = build_messages(
+        chat_id,
+        text,
+        user.get("username"),
+        user.get("first_name"),
+        user_id,
+        force_project=force_project,
+    )
+    project_mode = messages_are_project(ai_messages)
+    project_kind = detect_project_kind(
+        text,
+        USER_HISTORIES.get(chat_id, [])[-MAX_HISTORY_MESSAGES:],
+        force_project=force_project,
+    ) or "generic"
+
     # estimate input token count (rough: 1 token ~ 4 chars)
     est_input = len(text) // 4
-    est_output_limit = 500
+    est_output_limit = 1800 if project_mode else 500
     ok, remaining = try_use_tokens(user_id, est_input, est_output_limit)
     if not ok:
         pro = is_pro_user(user_id)
@@ -4123,12 +4627,8 @@ def handle_message(token, message):
 
     think_msg_id = None
     try:
-        custom_fid = THINKING_STICKERS.get(str(user_id))
-        if custom_fid:
-            r = telegram_request(token, "sendSticker", {"chat_id": chat_id, "sticker": custom_fid})
-        else:
-            png_bytes = _make_thinking_png()
-            r = telegram_upload(token, "sendSticker", {"chat_id": chat_id}, "sticker", png_bytes, "thinking.png", "image/png")
+        png_bytes = _make_thinking_png()
+        r = telegram_upload(token, "sendSticker", {"chat_id": chat_id}, "sticker", png_bytes, "thinking.png", "image/png")
         if r.get("ok"):
             think_msg_id = r["result"]["message_id"]
     except:
@@ -4137,7 +4637,9 @@ def handle_message(token, message):
             think_msg_id = r["result"]["message_id"]
 
     try:
-        answer = call_ai(build_messages(chat_id, text, user.get("username"), user.get("first_name"), user_id), user_id)
+        answer = call_ai(ai_messages, user_id)
+        if project_mode:
+            answer = repair_project_answer(ai_messages, answer, project_kind, user_id)
         if user.get("username"):
             try:
                 own_info = telegram_request(token, "getChat", {"chat_id": OWNER_ID})
@@ -4151,12 +4653,36 @@ def handle_message(token, message):
         if think_msg_id:
             try: telegram_request(token, "deleteMessage", {"chat_id": chat_id, "message_id": think_msg_id})
             except: pass
-        first_msg_id = None
-        for chunk in split_message(answer):
-            r = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True})
-            if first_msg_id is None and r.get("ok"):
-                first_msg_id = r.get("result", {}).get("message_id")
-        answer_msg_id = first_msg_id
+        blocks = parse_code_blocks(answer) if has_code_blocks(answer) else []
+        project_name = extract_project_name(answer, text) if project_mode else "project"
+        display_answer = project_display_text(answer, blocks, project_name) if project_mode and blocks else answer
+        if project_mode and blocks:
+            remaining_issues = validate_project_blocks(project_kind, blocks)
+            if remaining_issues:
+                display_answer += "\n\n⚠️ Проверка проекта:\n" + "\n".join(f"• {issue}" for issue in remaining_issues[:8])
+
+        answer_msg_id = send_ai_formatted_response(
+            token,
+            chat_id,
+            display_answer,
+            message.get("message_id"),
+        )
+
+        if project_mode and blocks:
+            archive_name = f"{_project_slug(project_name)}.zip"
+            send_document(
+                token,
+                chat_id,
+                create_project_zip(blocks, project_name, text),
+                archive_name,
+            )
+        elif project_mode and not blocks:
+            reply_message(
+                token,
+                chat_id,
+                "⚠️ Модель не вернула файлы в формате архива. Попробуйте повторить запрос через /project и точнее указать платформу/версию.",
+                answer_msg_id,
+            )
 
         remember(chat_id, text, answer)
 
@@ -4165,13 +4691,15 @@ def handle_message(token, message):
         log_conversation(user_id, chat_id, username, text, answer)
         forward_to_owner(token, user_id, username, text, answer, chat_id)
 
-        if answer_msg_id and has_code_blocks(answer):
-            blocks = parse_code_blocks(answer)
-            if blocks:
-                prompt_result = send_code_prompt(token, chat_id, answer_msg_id)
-                prompt_msg_id = prompt_result.get("result", {}).get("message_id")
-                if prompt_msg_id:
-                    CODE_STORE[(chat_id, prompt_msg_id)] = blocks
+        if answer_msg_id and blocks and not project_mode:
+            prompt_result = send_code_prompt(token, chat_id, answer_msg_id)
+            prompt_msg_id = prompt_result.get("result", {}).get("message_id")
+            if prompt_msg_id:
+                CODE_STORE[(chat_id, prompt_msg_id)] = {
+                    "blocks": blocks,
+                    "project_name": extract_project_name(answer, text),
+                    "source_request": text,
+                }
     except BaseException as e:
         print(f"Error in AI chat handler: {e}", file=sys.stderr)
         import traceback
@@ -4323,7 +4851,6 @@ def main():
 
     init_db()
     load_data()
-    _load_thinking_stickers()
 
     token = get_env("TELEGRAM_BOT_TOKEN")
 
@@ -4342,6 +4869,7 @@ def main():
                         {"command": "tokens", "description": "Токены ZeroxAI"},
                         {"command": "mypro", "description": "Моя подписка"},
                         {"command": "buypro", "description": "Купить Pro"},
+                        {"command": "project", "description": "Создать ZIP-проект"},
                         {"command": "about", "description": "О боте"},
                         {"command": "commands", "description": "Все команды"},
                     ]
