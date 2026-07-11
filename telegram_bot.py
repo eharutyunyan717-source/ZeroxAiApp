@@ -10,6 +10,7 @@ import ssl
 import struct
 import sys
 import signal
+import subprocess
 import datetime
 import threading
 import time
@@ -1067,7 +1068,7 @@ LEVEL_NAMES = {
 }
 
 LEVEL_COMMANDS = {
-    1: ["/start", "/help", "/about", "/ping", "/id", "/myrole", "/team", "/lightlist", "/rules", "/commands", "/stats", "/report", "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme", "/free", "/promo", "/bal", "/slot"],
+    1: ["/start", "/help", "/about", "/ping", "/id", "/myrole", "/roles", "/team", "/lightlist", "/rules", "/commands", "/stats", "/report", "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme", "/free", "/promo", "/bal", "/slot"],
     5: ["/warn", "/warns", "/unwarn"],
     6: ["/mute", "/unmute", "/kick", "/ban", "/unban"],
     8: ["/role add", "/role remove", "/role give", "/role take", "/role list", "/role info", "/setrules"],
@@ -2442,7 +2443,7 @@ KNOWN_COMMANDS = {
     "/team", "/lightlist", "/rules", "/commands", "/stats", "/report",
     "/warn", "/warns", "/unwarn",
     "/mute", "/unmute", "/kick", "/ban", "/unban",
-    "/role", "/setrules",
+    "/role", "/roles", "/setrules",
     "/ticket", "/closeticket", "/feedback", "/announce", "/userinfo", "/support",
     "/clean", "/pin", "/unpin", "/slowmode", "/say", "/welcome", "/delete", "/banlist", "/shop",
     "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme",
@@ -3296,6 +3297,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                      "/ping — проверка",
                      "/id — ID чата/пользователя",
                      "/myrole — моя роль",
+                     "/roles — состав участников по ролям",
                      "/team — команда чата",
                      "/lightlist — уровни доступа",
                      "/rules — правила",
@@ -3344,6 +3346,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                      "/role remove — удалить роль",
                      "/role give — выдать роль",
                      "/role take — забрать роль",
+                     "/roles — состав участников по ролям",
                      "/role list — список ролей",
                      "/role info — информация о роли",
                      "/setrules — установить правила",
@@ -4090,6 +4093,26 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
 
             reply("Подкоманда не распознана. Используйте: add, remove, give, take, list, info")
+            return True
+
+        if cmd == "/roles":
+            cd = get_chat_data(chat_id)
+            if not cd.get("users"):
+                reply("Нет пользователей с ролями.")
+                return True
+            lines = ["👥 Состав:"]
+            for uid, role_name in sorted(cd["users"].items(), key=lambda x: x[1]):
+                rlevel = cd.get("roles", {}).get(role_name, "?")
+                try:
+                    member = telegram_request(token, "getChatMember", {"chat_id": chat_id, "user_id": int(uid)})
+                    u = member.get("result", {}).get("user", {})
+                    name = u.get("first_name") or u.get("username") or f"id{uid}"
+                    username = u.get("username", "")
+                    tag = f" (@{username})" if username else ""
+                    lines.append(f"• {name}{tag} — {role_name} (ур.{rlevel})")
+                except Exception:
+                    lines.append(f"• id{uid} — {role_name} (ур.{rlevel})")
+            reply("\n".join(lines))
             return True
 
         if cmd == "/setrules":
@@ -4842,6 +4865,31 @@ def webhook_handler_factory(token):
 def main():
     global BOT_ID, BOT_USERNAME
 
+    # PID file lock — prevent multiple instances
+    PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_pid.txt")
+    try:
+        if os.path.exists(PID_FILE):
+            with open(PID_FILE) as f:
+                old_pid_str = f.read().strip()
+            if old_pid_str:
+                try:
+                    old_pid = int(old_pid_str)
+                    if sys.platform == "win32":
+                        r = subprocess.run(["tasklist", "/FI", f"PID eq {old_pid}"], capture_output=True, text=True, timeout=5)
+                        if old_pid_str in r.stdout:
+                            print(f"Bot already running with PID {old_pid}. Exiting.", flush=True)
+                            sys.exit(0)
+                    else:
+                        os.kill(old_pid, 0)
+                        print(f"Bot already running with PID {old_pid}. Exiting.", flush=True)
+                        sys.exit(0)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        with open(PID_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception as e:
+        print(f"Warning: could not write PID file: {e}", file=sys.stderr)
+
     def signal_handler(sig, frame):
         print("Termination signal received, saving data...", flush=True)
         save_data()
@@ -4871,6 +4919,7 @@ def main():
                         {"command": "mypro", "description": "Моя подписка"},
                         {"command": "buypro", "description": "Купить Pro"},
                         {"command": "project", "description": "Создать ZIP-проект"},
+                        {"command": "roles", "description": "Состав по ролям"},
                         {"command": "about", "description": "О боте"},
                         {"command": "commands", "description": "Все команды"},
                     ]
