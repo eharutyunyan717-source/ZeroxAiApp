@@ -1068,7 +1068,7 @@ LEVEL_NAMES = {
 }
 
 LEVEL_COMMANDS = {
-    1: ["/start", "/help", "/about", "/ping", "/id", "/myrole", "/roles", "/team", "/lightlist", "/rules", "/commands", "/stats", "/report", "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme", "/free", "/promo", "/bal", "/slot"],
+    1: ["/start", "/help", "/about", "/ping", "/id", "/myrole", "/roles", "/staff", "/team", "/lightlist", "/rules", "/commands", "/stats", "/report", "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme", "/free", "/promo", "/bal", "/slot"],
     5: ["/warn", "/warns", "/unwarn"],
     6: ["/mute", "/unmute", "/kick", "/ban", "/unban"],
     8: ["/role add", "/role remove", "/role give", "/role take", "/role list", "/role info", "/setrules"],
@@ -2443,7 +2443,7 @@ KNOWN_COMMANDS = {
     "/team", "/lightlist", "/rules", "/commands", "/stats", "/report",
     "/warn", "/warns", "/unwarn",
     "/mute", "/unmute", "/kick", "/ban", "/unban",
-    "/role", "/roles", "/setrules",
+    "/role", "/roles", "/staff", "/setrules",
     "/ticket", "/closeticket", "/feedback", "/announce", "/userinfo", "/support",
     "/clean", "/pin", "/unpin", "/slowmode", "/say", "/welcome", "/delete", "/banlist", "/shop",
     "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme",
@@ -4115,6 +4115,36 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             reply("\n".join(lines))
             return True
 
+        if cmd == "/staff":
+            cd = get_chat_data(chat_id)
+            if not cd.get("users"):
+                reply("В чате нет назначенных ролей.")
+                return True
+            roles_map = cd.get("roles", {})
+            by_role = {}
+            for uid, rname in cd["users"].items():
+                by_role.setdefault(rname, []).append(uid)
+            lines = ["Состав команды:"]
+            for rname in sorted(by_role.keys(), key=lambda x: roles_map.get(x, 999)):
+                uids = by_role[rname]
+                level = roles_map.get(rname, "?")
+                members = []
+                for uid in uids:
+                    try:
+                        member = telegram_request(token, "getChatMember", {"chat_id": chat_id, "user_id": int(uid)})
+                        u = member.get("result", {}).get("user", {})
+                        name = u.get("first_name") or u.get("username") or f"id{uid}"
+                        username = u.get("username", "")
+                        tag = f" (@{username})" if username else ""
+                        members.append(f"  * {name}{tag}")
+                    except Exception:
+                        members.append(f"  * id{uid}")
+                lines.append(f"> {rname} (уровень {level}):")
+                lines.extend(members)
+                lines.append("")
+            reply("\n".join(lines).strip())
+            return True
+
         if cmd == "/setrules":
             if not require(8): return True
             cd = get_chat_data(chat_id)
@@ -4775,7 +4805,6 @@ def webhook_handler_factory(token):
         def do_GET(self):
             path = self.path.split("?")[0]
             static_files = {
-                "/": ("index.html", "text/html"),
                 "/index.html": ("index.html", "text/html"),
                 "/src/app.js": ("src/app.js", "application/javascript"),
                 "/src/styles.css": ("src/styles.css", "text/css"),
@@ -4783,7 +4812,13 @@ def webhook_handler_factory(token):
                 "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
                 "/service-worker.js": ("service-worker.js", "application/javascript"),
             }
-            if path in static_files:
+            if path == "/":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(b"ok")
+            elif path in static_files:
                 fname, ctype = static_files[path]
                 try:
                     with open(fname, "rb") as f:
@@ -4988,5 +5023,5 @@ def _run_polling_bot(token):
             time.sleep(3)
 
 
-if __name__ == "__main__":
-    main()
+# Run only via app.py (Railway deployment).
+# Direct python telegram_bot.py is disabled to prevent running without a database.
