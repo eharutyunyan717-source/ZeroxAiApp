@@ -4118,13 +4118,51 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
         if cmd == "/staff":
             cd = get_chat_data(chat_id)
             if not cd.get("users"):
-                reply("В чате нет назначенных ролей.")
+                reply("\u0412 \u0447\u0430\u0442\u0435 \u043d\u0435\u0442 \u043d\u0430\u0437\u043d\u0430\u0447\u0435\u043d\u043d\u044b\u0445 \u0440\u043e\u043b\u0435\u0439.")
                 return True
             roles_map = cd.get("roles", {})
             by_role = {}
             for uid, rname in cd["users"].items():
                 by_role.setdefault(rname, []).append(uid)
-            lines = ["Состав команды:"]
+            ROLE_EMOJI = {
+                "\u0433\u043b\u0430\u0432\u043d\u044b\u0439 \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446": "\u2b50",
+                "\u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446": "\U0001F451",
+                "\u0441\u043e.\u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446": "\U0001F91D",
+                "\u0441\u043e\u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446": "\U0001F91D",
+                "\u0437\u0430\u043c\u0435\u0441\u0442\u0438\u0442\u0435\u043b\u044c \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0430": "\U0001F451",
+                "\u0433\u043b\u0430\u0432\u043d\u044b\u0439 \u0437\u0430\u043c\u0435\u0441\u0442\u0438\u0442\u0435\u043b\u044c": "\U0001F451",
+                "\u043a\u043e\u0434\u0435\u0440": "\U0001F5A5",
+                "\u043c\u043e\u0434\u0435\u0440\u0430\u0442\u043e\u0440": "\U0001F6E1",
+                "\u0430\u0434\u043c\u0438\u043d": "\U0001F4A0",
+                "\u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440": "\U0001F4BC",
+                "\u043f\u043e\u043c\u043e\u0449\u043d\u0438\u043a": "\U0001F4A1",
+                "\u0445\u0435\u043b\u043f\u0435\u0440": "\U0001F4A1",
+                "\u0431\u0443\u0441\u0442\u0435\u0440": "\U0001F4A0",
+                "\u0432\u0438\u043f": "\U0001F4BC",
+                "\u044e\u0442\u0443\u0431\u0435\u0440": "\U0001F3AC",
+                "\u0441\u0442\u0440\u0438\u043c\u0435\u0440": "\U0001F4FA",
+                "\u0445\u0443\u0434\u043e\u0436\u043d\u0438\u043a": "\U0001F3A8",
+                "\u0431\u0438\u043b\u0434\u0435\u0440": "\U0001F3D7",
+                "\u0434\u0438\u0437\u0430\u0439\u043d\u0435\u0440": "\U0001F3A8",
+                "\u043f\u0438\u0430\u0440": "\U0001F4E2",
+                "\u0442\u0438\u043c\u043b\u0438\u0434": "\U0001F465",
+                "\u043b\u0438\u0434\u0435\u0440": "\U0001F465",
+                "\u043a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u043d\u0442": "\u2139",
+                "\u0438\u043d\u0436\u0435\u043d\u0435\u0440": "\u2699",
+                "\u0441\u043f\u043e\u043d\u0441\u043e\u0440": "\U0001F4B0",
+                "\u0433\u0435\u0439\u043c\u0435\u0440": "\U0001F3AE",
+                "\u0442\u0435\u0441\u0442\u0435\u0440": "\u2705",
+                "\u0434\u043e\u043d\u0430\u0442\u0435\u0440": "\U0001F4B8",
+            }
+            def role_emoji(rname):
+                key = rname.lower().strip()
+                if key in ROLE_EMOJI:
+                    return ROLE_EMOJI[key]
+                for pattern, emoji in ROLE_EMOJI.items():
+                    if pattern in key or key in pattern:
+                        return emoji
+                return "\U0001F539"
+            lines = ["\U0001F465 \u0421\u043e\u0441\u0442\u0430\u0432 \u043a\u043e\u043c\u0430\u043d\u0434\u044b:"]
             for rname in sorted(by_role.keys(), key=lambda x: roles_map.get(x, 999)):
                 uids = by_role[rname]
                 level = roles_map.get(rname, "?")
@@ -4135,13 +4173,13 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                         u = member.get("result", {}).get("user", {})
                         name = u.get("first_name") or u.get("username") or f"id{uid}"
                         username = u.get("username", "")
-                        tag = f" (@{username})" if username else ""
-                        members.append(f"  * {name}{tag}")
+                        tag = f" @{username}" if username else ""
+                        members.append(f"\u2022 {tag}" if username else f"\u2022 {name}")
                     except Exception:
-                        members.append(f"  * id{uid}")
-                lines.append(f"> {rname} (уровень {level}):")
+                        members.append(f"\u2022 id{uid}")
+                em = role_emoji(rname)
+                lines.append(f"\n{em} {rname} \u2014 \u0423\u0440\u043e\u0432\u0435\u043d\u044c {level}")
                 lines.extend(members)
-                lines.append("")
             reply("\n".join(lines).strip())
             return True
 
