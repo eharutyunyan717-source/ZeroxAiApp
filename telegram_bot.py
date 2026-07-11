@@ -4987,8 +4987,13 @@ def main():
                 time.sleep(60)
                 continue
             if set_webhook(token):
-                port = int(os.getenv("PORT", "8080"))
-                server = ThreadingHTTPServer(("0.0.0.0", port), webhook_handler_factory(token))
+                port = int(os.getenv("WEBHOOK_PORT", os.getenv("PORT", "8080")))
+                try:
+                    server = ThreadingHTTPServer(("0.0.0.0", port), webhook_handler_factory(token))
+                except OSError:
+                    print(f"Port {port} in use, falling back to polling mode", flush=True)
+                    _run_polling_bot(token)
+                    continue
                 print(f"Webhook server listening on port {port}", flush=True)
                 server.serve_forever()
             else:
