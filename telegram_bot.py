@@ -3970,10 +3970,10 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
 
             if sub == "add":
-                if not require(8): return True
                 if len(args) < 3:
                     reply("Использование: /role add <название> <уровень (1-11)>")
                     return True
+                if not require(8): return True
                 role_name = args[1]
                 try:
                     role_level = int(args[2])
@@ -3990,10 +3990,10 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
 
             if sub == "remove":
-                if not require(8): return True
                 if len(args) < 2:
                     reply("Использование: /role remove <название>")
                     return True
+                if not require(8): return True
                 role_name = args[1]
                 cd = get_chat_data(chat_id)
                 if role_name not in cd["roles"]:
@@ -4008,10 +4008,10 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
 
             if sub in ("give", "grant"):
-                if not require(8): return True
                 if len(args) < 3:
                     reply("Использование: /role give <пользователь> <роль>")
                     return True
+                if not require(8): return True
                 target = parse_user_ref(message, args[1:])
                 if not target:
                     reply("Укажите пользователя.")
@@ -4029,10 +4029,10 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 return True
 
             if sub == "take":
-                if not require(8): return True
                 if len(args) < 3:
                     reply("Использование: /role take <пользователь> <роль>")
                     return True
+                if not require(8): return True
                 target = parse_user_ref(message, args[1:])
                 if not target:
                     reply("Укажите пользователя.")
