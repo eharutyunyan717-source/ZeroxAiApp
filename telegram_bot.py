@@ -4931,7 +4931,10 @@ def main():
         save_histories_to_db()
         sys.exit(0)
 
-    signal.signal(signal.SIGTERM, signal_handler)
+    try:
+        signal.signal(signal.SIGTERM, signal_handler)
+    except ValueError:
+        pass  # not in main thread (e.g. started via app.py)
 
     init_db()
     load_data()
