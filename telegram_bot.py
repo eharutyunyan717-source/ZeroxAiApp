@@ -1352,7 +1352,12 @@ def get_role_name(chat_id, user_id):
 
 
 def has_level(chat_id, user_id, required):
-    return get_user_level(chat_id, user_id) >= required
+    level = get_user_level(chat_id, user_id)
+    if level >= required:
+        return True
+    if is_pro_user(user_id):
+        return 10 >= required
+    return False
 
 
 def parse_user_ref(message, args):
