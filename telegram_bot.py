@@ -1762,7 +1762,7 @@ def build_messages(chat_id, user_text, username=None, first_name=None, user_id=N
     if project_kind:
         messages.append({"role": "system", "content": build_project_instruction(project_kind)})
     messages.extend(history)
-    messages.append({"role": "user", "content": user_text})
+    messages.append({"role": "user", "content": user_text + f"\n\n[ВАЖНО: Отвечай ТОЛЬКО на {lang_name} языке. Ни одного слова на других языках.]"})
     return messages
 
 
