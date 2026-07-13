@@ -834,9 +834,9 @@ def call_ai(messages, user_id):
         if res:
             return res
     if project_mode:
-        return call_openrouter(messages, "deepseek/deepseek-chat")
-    if is_pro_user(user_id):
         return call_cerebras(messages)
+    if is_pro_user(user_id):
+        return call_openrouter(messages, "openai/gpt-oss-120b")
     return call_openrouter(messages, "meta-llama/llama-3.2-3b-instruct")
 
 
@@ -1708,7 +1708,7 @@ def shop(token, chat_id, user_id):
         "\U0001F535 <b>Free</b> — Бесплатно\n"
         "Meta Llama 3.2 3B, до 1000 токенов/24ч\n\n"
         "\u2B50 <b>Pro</b> — 100 ⭐\n"
-        "Cerebras Llama 3.1 70B, до 4000 токенов/12ч, 30 дней\n\n"
+        "GPT-OSS-120B (чат) + Cerebras Llama 3.1 70B (код), до 4000 токенов/12ч, 30 дней\n\n"
         "\U0001F916 <b>Токены</b>\n"
         "\uD83D\uDFE2 50 = ⭐1 | 100 = ⭐2 | 250 = ⭐4\n"
         "\uD83D\uDFE2 500 = ⭐7 | 1000 = ⭐12\n"
