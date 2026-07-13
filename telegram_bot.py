@@ -806,7 +806,7 @@ def add_bonus_tokens(user_id, amount):
     except Exception as e:
         print(f"add_bonus_tokens({user_id}, {amount}) error: {e}", file=sys.stderr)
 
-def get_luck(user_id):
+def get_token_remaining(user_id):
     pro = is_pro_user(user_id)
     limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
     period_hours = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
