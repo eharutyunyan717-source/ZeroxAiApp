@@ -836,7 +836,7 @@ def call_ai(messages, user_id):
     if project_mode:
         return call_openrouter(messages, "deepseek/deepseek-chat")
     if is_pro_user(user_id):
-        return call_openrouter(messages, "deepseek/deepseek-chat")
+        return call_cerebras(messages)
     return call_openrouter(messages, "meta-llama/llama-3.2-3b-instruct")
 
 
@@ -939,6 +939,32 @@ def call_openrouter(messages, model=None):
             last_err = f"OpenRouter exception: {e}"
             time.sleep(1)
     return f"OpenRouter не отвечает: {last_err}"
+
+
+def call_cerebras(messages, model=None):
+    key = os.getenv("CEREBRAS_API_KEY") or "csk-6w6x2dhx248jv4mh43h4cmtxjjcecermek4r38epn9v3e398"
+    model_name = model or "llama3.1-70b"
+    payload = {"model": model_name, "messages": messages, "temperature": 0.45 if messages_are_project(messages) else 0.55, "top_p": 0.9, "max_tokens": 8192 if messages_are_project(messages) else 2048}
+    last_err = None
+    for attempt in range(3):
+        try:
+            body = json.dumps(payload)
+            conn = http.client.HTTPSConnection("api.cerebras.ai", timeout=60, context=SSL_CONTEXT)
+            conn.request("POST", "/v1/chat/completions", body=body, headers={
+                "Content-Type": "application/json", "Authorization": f"Bearer {key}",
+            })
+            resp = conn.getresponse()
+            raw = resp.read().decode()
+            if resp.status != 200:
+                last_err = f"Cerebras status {resp.status}: {raw[:200]}"
+                continue
+            data = json.loads(raw)
+            return data["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            last_err = f"Cerebras exception: {e}"
+            time.sleep(1)
+    return f"Cerebras не отвечает: {last_err}"
+
 
 def call_nvidia(messages, model=None):
     nv_key = os.getenv("NVIDIA_API_KEY")
@@ -1682,7 +1708,7 @@ def shop(token, chat_id, user_id):
         "\U0001F535 <b>Free</b> — Бесплатно\n"
         "Meta Llama 3.2 3B, до 1000 токенов/24ч\n\n"
         "\u2B50 <b>Pro</b> — 100 ⭐\n"
-        "DeepSeek Chat, до 4000 токенов/12ч, 30 дней\n\n"
+        "Cerebras Llama 3.1 70B, до 4000 токенов/12ч, 30 дней\n\n"
         "\U0001F916 <b>Токены</b>\n"
         "\uD83D\uDFE2 50 = ⭐1 | 100 = ⭐2 | 250 = ⭐4\n"
         "\uD83D\uDFE2 500 = ⭐7 | 1000 = ⭐12\n"
@@ -2503,7 +2529,7 @@ def handle_callback_query(token, callback_query):
         else:
             text = (
                 "\u2B50 <b>Покупка Pro-подписки</b>\n\n"
-                "\u2022 Модель: DeepSeek Chat\n"
+                "\u2022 Модель: Cerebras Llama 3.1 70B\n"
                 "\u2022 Лимит: 10 000 токенов / 12ч\n"
                 "\u2022 Срок: 30 дней\n"
                 "\u2022 Цена: 100 \u2B50\n\n"
@@ -2521,7 +2547,7 @@ def handle_callback_query(token, callback_query):
                 "chat_id": chat_id,
                 "title": "\u2B50 ZeroxAI Pro",
                 "description": (
-                    "\u2714\uFE0F Доступ к мощной модели ZeroxAI Pro\n"
+                    "\u2714\uFE0F Доступ к Cerebras Llama 3.1 70B\n"
                     "\u2714\uFE0F Более умные и развёрнутые ответы\n"
                     "\u2714\uFE0F Приоритетная обработка запросов\n"
                     "\u2714\uFE0F На 30 дней"
@@ -4966,7 +4992,7 @@ def handle_update(token, update):
                         add_pro_user(user_id)
                         reply_message(token, msg["chat"]["id"],
                             "\u2B50\uFE0F Поздравляю! Вы стали Pro-пользователем! "
-                            "Теперь вы используете ZeroxAI Pro — более мощную модель.", msg.get("message_id"))
+                            "Теперь вы используете Cerebras Llama 3.1 70B.", msg.get("message_id"))
                 return
             handle_message(token, msg)
         except BaseException as e:
