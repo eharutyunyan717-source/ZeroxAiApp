@@ -750,7 +750,7 @@ FREE_TOKEN_LIMIT = 2000
 PRO_TOKEN_LIMIT = 10000
 FREE_PERIOD_HOURS = 24
 PRO_PERIOD_HOURS = 12
-TOKEN_STARS_RATE = 100  # tokens per 1 Star
+TOKEN_STARS_RATE = 50  # tokens per 1 Star for custom amount
 PENDING_TOKEN_AMOUNTS = {}  # user_id -> pending token count
 
 def get_token_usage(user_id):
@@ -1683,8 +1683,10 @@ def shop(token, chat_id, user_id):
         "Meta Llama 3.2 3B, до 2000 токенов/24ч\n\n"
         "\u2B50 <b>Pro</b> — 100 ⭐\n"
         "DeepSeek Chat, до 10000 токенов/12ч, 30 дней\n\n"
-        "\U0001F916 <b>Токены</b> — 1 ⭐ = 100 токенов\n"
-        "Докупай токены к любой подписке, безлимитные\n\n"
+        "\U0001F916 <b>Токены</b>\n"
+        "\uD83D\uDFE2 50 = ⭐1 | 100 = ⭐2 | 250 = ⭐4\n"
+        "\uD83D\uDFE2 500 = ⭐7 | 1000 = ⭐12\n"
+        "Кастом: 50 токенов = 1 ⭐\n\n"
         f"Текущий тариф: <b>{tier}</b>"
     )
     inline_kb = {
@@ -2543,7 +2545,11 @@ def handle_callback_query(token, callback_query):
     if data == "shop_tokens":
         text = (
             "\U0001F916 <b>Купить токены</b>\n\n"
-            "1 \u2B50 = 100 токенов\n"
+            "\uD83D\uDFE2 50 токенов — ⭐1\n"
+            "\uD83D\uDFE2 100 токенов — ⭐2\n"
+            "\uD83D\uDFE2 250 токенов — ⭐4\n"
+            "\uD83D\uDFE2 500 токенов — ⭐7\n"
+            "\uD83D\uDFE2 1000 токенов — ⭐12\n\n"
             "Докупленные токены не сгорают.\n\n"
             "Выберите количество:"
         )
@@ -2552,12 +2558,15 @@ def handle_callback_query(token, callback_query):
             "reply_markup": {
                 "inline_keyboard": [
                     [
-                        {"text": "50 (\u2B501)", "callback_data": "shop_tokens_buy_50"},
-                        {"text": "100 (\u2B501)", "callback_data": "shop_tokens_buy_100"},
+                        {"text": "50 ⭐1", "callback_data": "shop_tokens_buy_50"},
+                        {"text": "100 ⭐2", "callback_data": "shop_tokens_buy_100"},
                     ],
                     [
-                        {"text": "200 (\u2B502)", "callback_data": "shop_tokens_buy_200"},
-                        {"text": "300 (\u2B503)", "callback_data": "shop_tokens_buy_300"},
+                        {"text": "250 ⭐4", "callback_data": "shop_tokens_buy_250"},
+                        {"text": "500 ⭐7", "callback_data": "shop_tokens_buy_500"},
+                    ],
+                    [
+                        {"text": "1000 ⭐12", "callback_data": "shop_tokens_buy_1000"},
                     ],
                     [
                         {"text": "\u270F\uFE0F Своё количество", "callback_data": "shop_tokens_custom"},
@@ -2586,7 +2595,8 @@ def handle_callback_query(token, callback_query):
             amount = int(data.split("_")[-1])
         except (ValueError, IndexError):
             return
-        stars = max(1, (amount + TOKEN_STARS_RATE - 1) // TOKEN_STARS_RATE)
+        fixed = {50: 1, 100: 2, 250: 4, 500: 7, 1000: 12}
+        stars = fixed.get(amount, max(1, (amount + TOKEN_STARS_RATE - 1) // TOKEN_STARS_RATE))
         result = telegram_request(token, "sendInvoice", {
             "chat_id": chat_id,
             "title": f"\U0001F916 {amount} токенов",
