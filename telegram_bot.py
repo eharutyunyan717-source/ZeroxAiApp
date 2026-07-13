@@ -21,7 +21,7 @@ from psycopg2 import pool
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-MODEL = "openai/gpt-oss-120b"
+MODEL = "mistralai/mistral-7b-instruct-v0.3"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 REQUEST_TIMEOUT = 90
 MAX_HISTORY_MESSAGES = 24
@@ -836,7 +836,7 @@ def call_ai(messages, user_id):
     if project_mode:
         return call_cerebras(messages)
     if is_pro_user(user_id):
-        return call_openrouter(messages, "openai/gpt-oss-120b")
+        return call_openrouter(messages, "mistralai/mistral-7b-instruct-v0.3")
     return call_openrouter(messages, "meta-llama/llama-3.2-3b-instruct")
 
 
@@ -1712,7 +1712,7 @@ def shop(token, chat_id, user_id):
         "\U0001F535 <b>Free</b> — Бесплатно\n"
         "Meta Llama 3.2 3B, до 1000 токенов/24ч\n\n"
         "\u2B50 <b>Pro</b> — 100 ⭐\n"
-        "GPT-OSS-120B (чат) + Cerebras Llama 3.1 70B (код), до 4000 токенов/12ч, 30 дней\n\n"
+        "Mistral 7B (чат) + Cerebras Llama 3.1 70B (код), до 4000 токенов/12ч, 30 дней\n\n"
         "\U0001F916 <b>Токены</b>\n"
         "\uD83D\uDFE2 50 = ⭐1 | 100 = ⭐2 | 250 = ⭐4\n"
         "\uD83D\uDFE2 500 = ⭐7 | 1000 = ⭐12\n"
@@ -2984,7 +2984,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     return True
                 _LOCAL_PRO_MODE = (args[0] == "on")
                 reply(f"\u2705 Локальная модель {'включена' if _LOCAL_PRO_MODE else 'выключена'}. "
-                      f"Pro-юзерам будет {'Qwen2.5-Coder (локально)' if _LOCAL_PRO_MODE else 'GPT-OSS 120B (Groq)'}. "
+                       f"Pro-юзерам будет {'Qwen2.5-Coder (локально)' if _LOCAL_PRO_MODE else 'Mistral 7B (OpenRouter)'}. "
                       f"Если локальная модель недоступна — авто-fallback на Groq.")
                 return True
 
