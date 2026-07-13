@@ -1690,15 +1690,11 @@ def shop(token, chat_id, user_id, uid, km):
         f"Текущий тариф: <b>{tier}</b>"
     )
     inline_kb = {
-        "inline_keyboard": [
-            [
-                {"text": "\U0001F535 Free", "callback_data": "shop_free"},
-                {"text": "\u2B50 Pro", "callback_data": "shop_pro_info"},
-            ],
-            [
-                {"text": "\U0001F916 Токены", "callback_data": "shop_tokens"},
-            ],
-        ]
+        "inline_keyboard": [[
+            {"text": "\U0001F535 Free", "callback_data": "shop_free"},
+            {"text": "\u2B50 Pro", "callback_data": "shop_pro_info"},
+            {"text": "\U0001F916 Токены", "callback_data": "shop_tokens"},
+        ]]
     }
     reply_message(token, chat_id, text, None, parse_mode="HTML", reply_markup=inline_kb)
 
@@ -2498,49 +2494,52 @@ def handle_callback_query(token, callback_query):
         if is_pro_user(user_id):
             days = pro_days_left(user_id)
             text = f"\u2B50\uFE0F У вас уже активна Pro-подписка! Осталось {days} дн."
-            reply_markup = {"inline_keyboard": [[
-                {"text": "\u25C0 В магазин", "callback_data": "shop_main"},
-            ]]}
+            telegram_request(token, "editMessageText", {
+                "chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": [[
+                    {"text": "\u25C0 В магазин", "callback_data": "shop_main"},
+                ]]},
+            })
         else:
             text = (
-                "\u2B50 <b>Pro-подписка</b>\n\n"
+                "\u2B50 <b>Покупка Pro-подписки</b>\n\n"
                 "\u2022 Модель: DeepSeek Chat\n"
                 "\u2022 Лимит: 10 000 токенов / 12ч\n"
                 "\u2022 Срок: 30 дней\n"
                 "\u2022 Цена: 100 \u2B50\n\n"
-                "Оплата через Telegram Stars."
+                "\u26A0\uFE0F <b>Важно:</b>\n"
+                "\u2022 Возврат средств невозможен\n"
+                "\u2022 Покупка является добровольной\n"
+                "\u2022 После оплаты подписка активируется автоматически\n"
+                "\u2022 Оплата через Telegram Stars\n\n"
+                "\U0001F4E6 Создаю счёт..."
             )
-            reply_markup = {"inline_keyboard": [[
-                {"text": "\u25C0 Назад", "callback_data": "shop_main"},
-                {"text": f"\u2B50 Купить за 100 \u2B50", "callback_data": "shop_pro_buy"},
-            ]]}
-        telegram_request(token, "editMessageText", {
-            "chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML",
-            "reply_markup": reply_markup,
-        })
-        return
-
-    if data == "shop_pro_buy":
-        price_stars = 100
-        result = telegram_request(token, "sendInvoice", {
-            "chat_id": chat_id,
-            "title": "\u2B50 ZeroxAI Pro",
-            "description": (
-                "\u2714\uFE0F Доступ к мощной модели ZeroxAI Pro\n"
-                "\u2714\uFE0F Более умные и развёрнутые ответы\n"
-                "\u2714\uFE0F Приоритетная обработка запросов\n"
-                "\u2714\uFE0F На 30 дней — продлевается раз в месяц"
-            ),
-            "payload": f"pro_{user_id}",
-            "provider_token": "",
-            "currency": "XTR",
-            "prices": [{"label": "\u2B50 ZeroxAI Pro", "amount": price_stars}],
-        })
-        if not result.get("ok"):
             telegram_request(token, "editMessageText", {
-                "chat_id": chat_id, "message_id": msg_id,
-                "text": f"\u274C Ошибка: {result.get('description', 'неизвестно')}",
+                "chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML",
             })
+            result = telegram_request(token, "sendInvoice", {
+                "chat_id": chat_id,
+                "title": "\u2B50 ZeroxAI Pro",
+                "description": (
+                    "\u2714\uFE0F Доступ к мощной модели ZeroxAI Pro\n"
+                    "\u2714\uFE0F Более умные и развёрнутые ответы\n"
+                    "\u2714\uFE0F Приоритетная обработка запросов\n"
+                    "\u2714\uFE0F На 30 дней"
+                ),
+                "payload": f"pro_{user_id}",
+                "provider_token": "",
+                "currency": "XTR",
+                "prices": [{"label": "\u2B50 ZeroxAI Pro", "amount": 100}],
+            })
+            if not result.get("ok"):
+                telegram_request(token, "editMessageText", {
+                    "chat_id": chat_id, "message_id": msg_id,
+                    "text": f"\u274C Ошибка при создании счёта: {result.get('description', 'неизвестно')}",
+                    "parse_mode": "HTML",
+                    "reply_markup": {"inline_keyboard": [[
+                        {"text": "\u25C0 Назад", "callback_data": "shop_main"},
+                    ]]},
+                })
         return
 
     if data == "shop_tokens":
