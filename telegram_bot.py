@@ -746,8 +746,8 @@ def get_shop_status(user_id, item_id):
     return ""
 
 
-FREE_TOKEN_LIMIT = 2000
-PRO_TOKEN_LIMIT = 10000
+FREE_TOKEN_LIMIT = 1000
+PRO_TOKEN_LIMIT = 4000
 FREE_PERIOD_HOURS = 24
 PRO_PERIOD_HOURS = 12
 TOKEN_STARS_RATE = 50  # tokens per 1 Star for custom amount
@@ -1680,9 +1680,9 @@ def shop(token, chat_id, user_id):
     text = (
         "\U0001F6D2 <b>Магазин ZeroxAI</b>\n\n"
         "\U0001F535 <b>Free</b> — Бесплатно\n"
-        "Meta Llama 3.2 3B, до 2000 токенов/24ч\n\n"
+        "Meta Llama 3.2 3B, до 1000 токенов/24ч\n\n"
         "\u2B50 <b>Pro</b> — 100 ⭐\n"
-        "DeepSeek Chat, до 10000 токенов/12ч, 30 дней\n\n"
+        "DeepSeek Chat, до 4000 токенов/12ч, 30 дней\n\n"
         "\U0001F916 <b>Токены</b>\n"
         "\uD83D\uDFE2 50 = ⭐1 | 100 = ⭐2 | 250 = ⭐4\n"
         "\uD83D\uDFE2 500 = ⭐7 | 1000 = ⭐12\n"
