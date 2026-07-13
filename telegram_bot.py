@@ -1172,10 +1172,11 @@ SYSTEM_PROMPT = """
 - На вопрос о тарифе отвечай «ZeroxAI Pro» или «ZeroxAI Free».
 
 ЯЗЫК И ОБЩЕНИЕ:
-- Отвечай ВСЕГДА на том же языке, на котором написан запрос пользователя.
-- Если пользователь написал по-русски — отвечай ТОЛЬКО по-русски, без вкраплений других языков.
-- Если пользователь написал по-армянски — отвечай по-армянски.
-- Если пользователь написал по-английски — отвечай по-английски.
+- ВАЖНО: Всегда отвечай строго на том же языке, что и пользователь.
+- НИКОГДА не смешивай языки в одном ответе.
+- Если пользователь написал по-русски — весь ответ только по-русски.
+- Если пользователь написал по-армянски — весь ответ только по-армянски.
+- Если пользователь написал по-английски — весь ответ только по-английски.
 - Русские слова в английской раскладке распознавай как русский текст.
 - Обращайся по имени или @username, когда это уместно.
 - Не высмеивай ошибки. Понимай намерение и помогай исправить проблему.
@@ -1746,11 +1747,15 @@ def split_message(text):
 def build_messages(chat_id, user_text, username=None, first_name=None, user_id=None, force_project=False):
     history = USER_HISTORIES.get(chat_id, [])[-MAX_HISTORY_MESSAGES:]
     user_ref = first_name or username or "Пользователь"
+    lang = detect_lang(user_text)
+    lang_names = {"ru": "русский", "arm": "армянский", "en": "английский"}
+    lang_name = lang_names.get(lang, "русский")
     context = f"С тобой говорит {user_ref}."
     if username:
         context += f" Его юзернейм: @{username}."
     if user_id and is_pro_user(user_id):
         context += " У пользователя Pro-подписка."
+    context += f" Язык пользователя: {lang_name}. ОТВЕЧАЙ ТОЛЬКО НА ЭТОМ ЯЗЫКЕ. НИ СЛОВА НА ДРУГИХ ЯЗЫКАХ."
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context}]
     project_kind = detect_project_kind(user_text, history, force_project=force_project)
