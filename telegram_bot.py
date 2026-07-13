@@ -1663,8 +1663,6 @@ def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None, reply_
 
 
 def _menu_kb(is_pm=True):
-    if not is_pm:
-        return {"remove_keyboard": True}
     return {
         "keyboard": [
             [{"text": "🛒 Магазин"}],
