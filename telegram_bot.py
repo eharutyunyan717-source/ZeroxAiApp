@@ -1667,7 +1667,6 @@ def _menu_kb(is_pm=True):
         return {"remove_keyboard": True}
     return {
         "keyboard": [
-            [{"text": "💰 Баланс и Ставка"}, {"text": "? Пополнить"}],
             [{"text": "🛒 Магазин"}],
         ],
         "resize_keyboard": True,
@@ -1675,8 +1674,7 @@ def _menu_kb(is_pm=True):
     }
 
 
-def shop(token, chat_id, user_id, uid, km):
-    uid = uid or user_id
+def shop(token, chat_id, user_id):
     is_pro = is_pro_user(user_id)
     tier = "Pro" if is_pro else "Free"
     text = (
@@ -2606,7 +2604,7 @@ def handle_callback_query(token, callback_query):
         return
 
     if data == "shop_main":
-        shop(token, chat_id, user_id, None, None)
+        shop(token, chat_id, user_id)
         return
 
     if data == "menu_pro":
@@ -5145,7 +5143,7 @@ def handle_message(token, message):
         return
 
     if text == "🛒 Магазин":
-        shop(token, chat_id, user_id, uid, km)
+        shop(token, chat_id, user_id)
         return
 
     # custom token amount input
