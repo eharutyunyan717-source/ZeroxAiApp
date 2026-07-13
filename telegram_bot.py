@@ -963,7 +963,7 @@ def call_cerebras(messages, model=None):
         except Exception as e:
             last_err = f"Cerebras exception: {e}"
             time.sleep(1)
-    return f"Cerebras не отвечает: {last_err}"
+    return call_openrouter(messages, "deepseek/deepseek-chat")
 
 
 def call_nvidia(messages, model=None):
