@@ -1663,6 +1663,8 @@ def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None, reply_
 
 
 def _menu_kb(is_pm=True):
+    if not is_pm:
+        return {"remove_keyboard": True}
     return {
         "keyboard": [
             [{"text": "🛒 Магазин"}],
@@ -2709,7 +2711,7 @@ KNOWN_COMMANDS = {
     "/transfer", "/give", "/send",
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
-    "/server", "/addsticker", "/mypro", "/buypro",
+    "/server", "/addsticker", "/mypro", "/buypro", "/shop",
  "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
     "/hide", "/savehistory", "/answer",
     "/giveall", "/addcoin", "/testshop", "/logs", "/setsub",
@@ -3479,6 +3481,10 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             })
             if not result.get("ok"):
                 reply(f"\u274C Ошибка: {result.get('description', 'неизвестно')}")
+            return True
+
+        if cmd == "/shop":
+            shop(token, chat_id, user_id)
             return True
 
         if cmd == "/ping":
