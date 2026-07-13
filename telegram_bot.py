@@ -243,15 +243,17 @@ def load_ben_stickers(token):
 
 
 def load_dotenv():
-    try:
-        with open(".env", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if "=" in line and not line.startswith("#"):
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip())
-    except Exception:
-        pass
+    for p in [".env", "/app/.env"]:
+        try:
+            with open(p, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip())
+            break
+        except Exception:
+            continue
 
 
 load_dotenv()
@@ -268,6 +270,11 @@ MAX_BALANCE = 9_000_000_000_000_000_000_000_000_000_000_000_000
 PROMO_REWARDS = {"aibot2026": 2500, "aichat2026": 2500, "topaichatmeneger2026": 0}
 ADMIN_TICKET_TARGETS = ["@er1kos_designer"]
 AUTO_ANSWER_HOURS = 12
+
+_BOT_TOKEN = None
+_chat_owner_cache = {}
+_super_admin_ids = set()
+_username_cache = {}
 
 
 def parse_transfer_input(args, message):
@@ -743,6 +750,8 @@ FREE_TOKEN_LIMIT = 2000
 PRO_TOKEN_LIMIT = 10000
 FREE_PERIOD_HOURS = 24
 PRO_PERIOD_HOURS = 12
+TOKEN_STARS_RATE = 100  # tokens per 1 Star
+PENDING_TOKEN_AMOUNTS = {}  # user_id -> pending token count
 
 def get_token_usage(user_id):
     try:
@@ -786,7 +795,18 @@ def try_use_tokens(user_id, input_tokens, output_tokens):
         print(f"try_use_tokens({user_id}) error: {e}", file=sys.stderr)
         return False, 0
 
-def get_token_remaining(user_id):
+def add_bonus_tokens(user_id, amount):
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "INSERT INTO user_tokens (user_id, period_start, tokens_used) VALUES (%s, NOW(), %s) "
+                "ON CONFLICT (user_id) DO UPDATE SET tokens_used = user_tokens.tokens_used - %s",
+                (user_id, -amount, amount),
+            )
+    except Exception as e:
+        print(f"add_bonus_tokens({user_id}, {amount}) error: {e}", file=sys.stderr)
+
+def get_luck(user_id):
     pro = is_pro_user(user_id)
     limit = PRO_TOKEN_LIMIT if pro else FREE_TOKEN_LIMIT
     period_hours = PRO_PERIOD_HOURS if pro else FREE_PERIOD_HOURS
@@ -814,11 +834,47 @@ def call_ai(messages, user_id):
         if res:
             return res
     if project_mode:
-        project_model = os.getenv("ZEROXAI_PROJECT_MODEL", MODEL).strip() or MODEL
-        return call_groq(messages, project_model)
+        return call_openrouter(messages, "deepseek/deepseek-chat")
     if is_pro_user(user_id):
-        return call_groq(messages, "openai/gpt-oss-120b")
-    return call_nvidia(messages, "meta/llama-3.1-8b-instruct")
+        return call_openrouter(messages, "deepseek/deepseek-chat")
+    return call_openrouter(messages, "meta-llama/llama-3.2-3b-instruct")
+
+
+def call_local_ai(messages, model=None):
+    local_url = os.getenv("LOCAL_AI_URL", "").strip()
+    if not local_url:
+        print("call_local_ai: LOCAL_AI_URL not set", flush=True)
+        return ""
+    model_name = model or os.getenv("LOCAL_AI_MODEL", "qwen2.5:7b")
+    import urllib.request, urllib.parse, json
+    body = json.dumps({"model": model_name, "messages": messages, "stream": False, "temperature": 0.4, "top_p": 0.9}).encode("utf-8")
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(
+                local_url.rstrip("/") + "/api/chat",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "ngrok-skip-browser-warning": "true",
+                    "User-Agent": "ZeroxAI-Bot/1.0",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                raw = resp.read().decode("utf-8")
+                data = json.loads(raw)
+                content = data.get("message", {}).get("content", "").strip()
+                if content:
+                    return content
+                print(f"call_local_ai: empty response from {local_url}", flush=True)
+                return ""
+        except Exception as e:
+            print(f"call_local_ai: attempt {attempt} failed: {e}", flush=True)
+            if attempt:
+                return ""
+            import time
+            time.sleep(1)
+    return ""
 
 
 def call_ollama(messages, model=None):
@@ -852,11 +908,12 @@ def call_ollama(messages, model=None):
 def call_openrouter(messages, model=None):
     or_key = os.getenv("OPENROUTER_API_KEY")
     if not or_key:
-        return call_groq(messages, "llama-3.1-8b-instant")
+        return "Ошибка: OPENROUTER_API_KEY не настроен."
     model_name = model or "openai/gpt-4o-mini"
     payload = {"model": model_name, "messages": messages, "temperature": 0.45 if messages_are_project(messages) else 0.55, "top_p": 0.9, "max_tokens": 8192 if messages_are_project(messages) else 2048}
     body = json.dumps(payload).encode("utf-8")
     import http.client
+    last_err = ""
     for attempt in range(3):
         try:
             conn = http.client.HTTPSConnection("openrouter.ai", timeout=60, context=SSL_CONTEXT)
@@ -874,17 +931,19 @@ def call_openrouter(messages, model=None):
                 time.sleep(2 * (attempt + 1))
                 continue
             if resp.status != 200:
+                last_err = f"OpenRouter status {resp.status}: {raw[:200]}"
                 continue
             data = json.loads(raw)
             return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         except Exception as e:
+            last_err = f"OpenRouter exception: {e}"
             time.sleep(1)
-    return call_groq(messages, "llama-3.1-8b-instant")
+    return f"OpenRouter не отвечает: {last_err}"
 
 def call_nvidia(messages, model=None):
     nv_key = os.getenv("NVIDIA_API_KEY")
     if not nv_key:
-        return call_groq(messages, "llama-3.1-8b-instant")
+        return call_openrouter(messages, "meta-llama/llama-3.2-3b-instruct")
     model_name = model or "meta/llama-3.1-8b-instruct"
     payload = {"model": model_name, "messages": messages, "temperature": 0.45 if messages_are_project(messages) else 0.55, "top_p": 0.9, "max_tokens": 8192 if messages_are_project(messages) else 2048}
     body = json.dumps(payload).encode("utf-8")
@@ -909,7 +968,7 @@ def call_nvidia(messages, model=None):
             return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         except Exception as e:
             time.sleep(1)
-    return call_groq(messages, "llama-3.1-8b-instant")
+    return call_openrouter(messages, "google/gemini-2.0-flash-001")
 
 def call_mistral(messages, model=None):
     ms_key = os.getenv("MISTRAL_API_KEY")
@@ -938,7 +997,7 @@ def call_mistral(messages, model=None):
             return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         except Exception as e:
             time.sleep(1)
-    return call_groq(messages, "llama-3.1-8b-instant")
+    return call_openrouter(messages, "google/gemini-2.0-flash-001")
 
 def call_gemini(messages):
     global _GEMINI_LAST_CALL
@@ -1068,7 +1127,7 @@ LEVEL_NAMES = {
 }
 
 LEVEL_COMMANDS = {
-    1: ["/start", "/help", "/about", "/ping", "/id", "/myrole", "/roles", "/staff", "/team", "/lightlist", "/rules", "/commands", "/stats", "/report", "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme", "/free", "/promo", "/bal", "/slot"],
+    1: ["/start", "/help", "/about", "/ping", "/id", "/myrole", "/staff", "/team", "/lightlist", "/rules", "/commands", "/stats", "/report", "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme", "/free", "/promo", "/bal", "/slot"],
     5: ["/warn", "/warns", "/unwarn"],
     6: ["/mute", "/unmute", "/kick", "/ban", "/unban"],
     8: ["/role add", "/role remove", "/role give", "/role take", "/role list", "/role info", "/setrules"],
@@ -1076,17 +1135,15 @@ LEVEL_COMMANDS = {
 }
 
 SYSTEM_PROMPT = """
-Ты ZeroxAI — многофункциональный AI-ассистент и Project Studio.
-ZeroxAI создан Эриком Арутюняном. Ты уверенно помогаешь с программированием, дизайном, архитектурой проектов, Minecraft, сайтами, приложениями, Telegram-ботами и исправлением ошибок.
+Ты ZeroxAI — AI-ассистент и Project Studio. Создан Эриком Арутюняном.
+Не представляйся в каждом ответе. Отвечай коротко и по делу, если не просят иначе.
+Идентичность раскрывай только когда напрямую спросили «кто ты».
 
 ИДЕНТИЧНОСТЬ:
-- На вопрос «кто ты?» отвечай: «Я ZeroxAI — AI-ассистент и Project Studio для создания, улучшения и отладки проектов.»
-- На вопрос «кто тебя создал?» отвечай строго одной фразой:
-  русский: «Мой создатель Эрик Арутюнян»
-  армянский: «Իմ ստեղծողը Էրիկ Հարությունյանն է»
-  английский: «My creator is Erik Harutyunyan»
-- Не называй себя ChatGPT, OpenAI, Groq, Llama, GPT или другой моделью. Для пользователя ты ZeroxAI.
-- На вопрос о тарифе отвечай «ZeroxAI Pro» или «ZeroxAI Free» по контексту пользователя.
+- На вопрос «кто ты?» отвечай: «Я ZeroxAI — AI-ассистент и Project Studio.»
+- На вопрос «кто тебя создал?»: «Мой создатель Эрик Арутюнян»
+- Не называй себя ChatGPT, OpenAI, Groq, Llama, GPT.
+- На вопрос о тарифе отвечай «ZeroxAI Pro» или «ZeroxAI Free».
 
 ЯЗЫК И ОБЩЕНИЕ:
 - Отвечай только на языке пользователя: русский, армянский или английский.
@@ -1166,13 +1223,28 @@ PROJECT_KIND_PROMPTS = {
     "mcbe_php": """
 Специализация: плагины Minecraft Bedrock/MCPE для PocketMine-MP и PHP-ядер.
 - PocketMine-MP, PMMP, Submarine, EnvyCore и их форки используют PHP-плагин, если пользователь явно не указал иное.
-- Обязательно создай plugin.yml, корректный src/namespace, главный класс PluginBase и resources/config.yml, когда нужен конфиг.
+- Строго следуй структуре папок:
+  plugin.yml          — корень проекта
+  resources/
+    config.yml        — конфиг с настройками по умолчанию
+    messages.yml      — файл сообщений/локализации (если нужен)
+  src/<Namespace>/
+    Main.php          — главный класс, extends PluginBase
+    BanManager.php    — менеджер банов (если нужен)
+    PlayerListener.php — слушатель событий (если нужен)
+    commands/
+      BanCommand.php
+      UnbanCommand.php
+      (другие команды по необходимости)
+  README.md
+- Обязательно создай plugin.yml, resources/config.yml, корректный src/namespace и главный класс PluginBase.
 - Учитывай точную версию ядра/API и версию PHP. Для старых ядер не используй синтаксис и API новых PMMP.
 - Не подменяй API одного ядра другим. Если ядро нестандартное, опирайся на названия классов и стиль API из контекста пользователя.
 - Команды должны иметь permissions, usage, aliases при необходимости; события регистрируй в onEnable.
 - Сохраняй данные безопасно: YAML/JSON/SQLite в зависимости от задачи, с созданием каталогов и обработкой отсутствующих ключей.
 - Для многоверсионных серверов не используй новые блоки/предметы без fallback, если пользователь просит поддержку старых клиентов.
 - Добавь README с установкой .phar/исходников и совместимостью. Не утверждай, что PHAR уже скомпилирован, если выдаёшь только исходники.
+- Каждый PHP-файл — полноценный рабочий класс без заглушек и TODO.
 """.strip(),
     "nukkit": """
 Специализация: Minecraft Bedrock-серверы Nukkit/PowerNukkitX.
@@ -1189,10 +1261,33 @@ PROJECT_KIND_PROMPTS = {
 """.strip(),
     "minecraft_java": """
 Специализация: Minecraft Java Edition plugins/mods/datapacks.
-- Paper/Spigot/Purpur/Bukkit — Java plugin с plugin.yml и Gradle/Maven.
+- Paper/Spigot/Purpur/Bukkit — Java plugin. Строгая структура:
+  <ProjectName>/
+    plugin.yml
+    config.yml           — если нужен конфиг
+    messages.yml         — если нужны сообщения
+    src/main/java/<package>/
+      Main.java          — extends JavaPlugin
+      commands/
+        <Command>.java
+      listeners/
+        <Listener>.java
+      managers/
+        <Manager>.java
+      database/
+        <Database>.java  — если есть БД
+      utils/
+        <Util>.java
+    src/main/resources/
+      plugin.yml         — копия в ресурсах для сборки
+      config.yml
+    pom.xml ИЛИ build.gradle / settings.gradle
+    README.md
+    .gitignore
 - Fabric/Forge/NeoForge — мод с соответствующим loader metadata и build-конфигурацией.
 - Datapack — pack.mcmeta и data namespace без Java-классов.
 - Не смешивай Bukkit API, Fabric API и Bedrock/PocketMine API.
+- Каждый Java-файл — полноценный рабочий класс без заглушек и TODO.
 """.strip(),
     "telegram_bot": """
 Специализация: Telegram-боты.
@@ -1334,6 +1429,7 @@ def get_chat_data(chat_id):
             "warns": {},
             "rules": "",
             "welcome": "",
+            "chapters": [],
         }
     return BOT_DATA["chats"][cid]
 
@@ -1346,13 +1442,41 @@ def get_user_level(chat_id, user_id):
     return 1
 
 
+def has_level(chat_id, user_id, required):
+    if user_id in _super_admin_ids:
+        return True
+    if _BOT_TOKEN and chat_id not in _chat_owner_cache:
+        try:
+            admins = telegram_request(_BOT_TOKEN, "getChatAdministrators", {"chat_id": chat_id}).get("result", [])
+            for a in admins:
+                if a.get("status") == "creator":
+                    _chat_owner_cache[chat_id] = a["user"]["id"]
+                    break
+        except Exception:
+            _chat_owner_cache[chat_id] = None
+    if _chat_owner_cache.get(chat_id) == user_id:
+        return True
+    return get_user_level(chat_id, user_id) >= required
+
+
 def get_role_name(chat_id, user_id):
     cd = get_chat_data(chat_id)
     return cd.get("users", {}).get(str(user_id), "")
 
 
-def has_level(chat_id, user_id, required):
-    return get_user_level(chat_id, user_id) >= required
+def migrate_legacy_user_keys(token):
+    for cid_str, cd in list(BOT_DATA.get("chats", {}).items()):
+        users = cd.get("users", {})
+        changed = False
+        for key, role_name in list(users.items()):
+            if isinstance(key, str) and key.startswith("@"):
+                resolved = resolve_username(token, key, int(cid_str))
+                if resolved:
+                    users[str(resolved)] = role_name
+                    del users[key]
+                    changed = True
+        if changed:
+            save_data()
 
 
 def parse_user_ref(message, args):
@@ -1369,11 +1493,14 @@ def parse_user_ref(message, args):
 
 
 def resolve_username(token, username, chat_id=None):
-    username = username.lstrip("@").lower()
+    username_clean = username.lstrip("@").lower()
+    cached = _username_cache.get(username_clean)
+    if cached:
+        return cached
     try:
         if DB_POOL:
             with db_cursor() as cur:
-                cur.execute("SELECT user_id FROM users WHERE LOWER(username) = %s", (username,))
+                cur.execute("SELECT user_id FROM users WHERE LOWER(username) = %s", (username_clean,))
                 row = cur.fetchone()
                 if row:
                     return row[0]
@@ -1395,6 +1522,18 @@ def resolve_username(token, username, chat_id=None):
                     return uid
         except Exception:
             pass
+    # fallback: try getChat with @username (Telegram may accept user @usernames too)
+    try:
+        chat_info = telegram_request(token, "getChat", {"chat_id": f"@{username_clean}"})
+        if chat_info:
+            result = chat_info.get("result") or {}
+            if result.get("type") == "private":
+                uid = result.get("id")
+                if uid:
+                    _username_cache[username_clean] = uid
+                    return uid
+    except Exception:
+        pass
     return None
 
 
@@ -1487,23 +1626,12 @@ def telegram_upload(token, method, fields, file_field, file_bytes, filename, con
             raise
 
 
+_BASE64 = __import__("base64")
+
+_STICKER_B64 = "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"
+
 def _make_thinking_png():
-    from PIL import Image, ImageDraw
-    img = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([56, 56, 456, 456], fill=(200, 220, 255, 240))
-    draw.ellipse([66, 66, 446, 446], fill=(180, 210, 255, 255))
-    dot_radius = 24
-    dot_y = 256
-    spacing = 80
-    start_x = 256 - spacing
-    for i in range(3):
-        x = start_x + i * spacing
-        draw.ellipse([x - dot_radius, dot_y - dot_radius, x + dot_radius, dot_y + dot_radius], fill=(60, 100, 180, 255))
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf.read()
+    return _BASE64.b64decode(_STICKER_B64)
 
 def send_message(token, chat_id, text, reply_markup=None, parse_mode=None):
     chunks = split_message(text)
@@ -1534,25 +1662,45 @@ def reply_message(token, chat_id, text, reply_to_msg_id, parse_mode=None, reply_
         telegram_request(token, "sendMessage", payload)
 
 
-def _menu_kb():
+def _menu_kb(is_pm=True):
+    if not is_pm:
+        return {"remove_keyboard": True}
     return {
         "keyboard": [
-            [{"text": "🚀 Создать проект"}, {"text": "✨ Возможности"}],
-            [{"text": "⭐ Подписка"}, {"text": "🤖 Токены"}],
+            [{"text": "💰 Баланс и Ставка"}, {"text": "? Пополнить"}],
+            [{"text": "🛒 Магазин"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
     }
 
 
-def edit_message(token, chat_id, message_id, text, parse_mode=None):
-    payload = {
-        "chat_id": chat_id, "message_id": message_id, "text": text,
-        "disable_web_page_preview": True,
+def shop(token, chat_id, user_id, uid, km):
+    uid = uid or user_id
+    is_pro = is_pro_user(user_id)
+    tier = "Pro" if is_pro else "Free"
+    text = (
+        "\U0001F6D2 <b>Магазин ZeroxAI</b>\n\n"
+        "\U0001F535 <b>Free</b> — Бесплатно\n"
+        "Meta Llama 3.2 3B, до 2000 токенов/24ч\n\n"
+        "\u2B50 <b>Pro</b> — 100 ⭐\n"
+        "DeepSeek Chat, до 10000 токенов/12ч, 30 дней\n\n"
+        "\U0001F916 <b>Токены</b> — 1 ⭐ = 100 токенов\n"
+        "Докупай токены к любой подписке, безлимитные\n\n"
+        f"Текущий тариф: <b>{tier}</b>"
+    )
+    inline_kb = {
+        "inline_keyboard": [
+            [
+                {"text": "\U0001F535 Free", "callback_data": "shop_free"},
+                {"text": "\u2B50 Pro", "callback_data": "shop_pro_info"},
+            ],
+            [
+                {"text": "\U0001F916 Токены", "callback_data": "shop_tokens"},
+            ],
+        ]
     }
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-    telegram_request(token, "editMessageText", payload)
+    reply_message(token, chat_id, text, None, parse_mode="HTML", reply_markup=inline_kb)
 
 
 def detect_lang(text):
@@ -1602,7 +1750,7 @@ def log_conversation(user_id, chat_id, username, user_message, ai_response):
         with db_cursor() as cur:
             cur.execute(
                 "INSERT INTO conversation_log (user_id, chat_id, username, user_message, ai_response) VALUES (%s, %s, %s, %s, %s)",
-                (user_id, chat_id, username, user_message, ai_response)
+                (user_id, chat_id, username, user_message, ai_response or "")
             )
     except Exception as e:
         print(f"Failed to log conversation: {e}", file=sys.stderr)
@@ -1623,7 +1771,7 @@ def forward_to_owner(token, user_id, username, user_message, ai_response, chat_i
         f"Чат: {chat_id}\n"
         f"Время: {now}\n\n"
         f"<b>Пользователь:</b>\n{user_message[:500]}\n\n"
-        f"<b>AI:</b>\n{ai_response[:1500]}"
+        f"<b>AI:</b>\n{ai_response[:1500] if ai_response else 'Пустой ответ'}"
     )
     try:
         reply_message(token, OWNER_ID, text, None, parse_mode="HTML")
@@ -1828,6 +1976,7 @@ def call_groq(messages, model=None):
     global ACTIVE_KEY_INDEX, TOKEN_USAGE
     api_keys = get_api_keys()
     if not api_keys:
+        print("Groq: no API keys configured", flush=True)
         return "Ошибка: добавьте ZEROXAI_API_KEYS в переменные окружения."
     model_name = model or MODEL
     payload = {"model": model_name, "messages": messages, "temperature": 0.45 if messages_are_project(messages) else 0.55, "top_p": 0.9, "max_tokens": 8192 if messages_are_project(messages) else 2048}
@@ -1866,34 +2015,8 @@ def call_groq(messages, model=None):
                 conn.close()
         time.sleep(0.2)
     ACTIVE_KEY_INDEX = (ACTIVE_KEY_INDEX + 1) % len(api_keys)
-    # fallback to OpenRouter if available
-    or_key = os.getenv("OPENROUTER_API_KEY")
-    if or_key:
-        try:
-            payload["model"] = "google/gemini-2.0-flash-001"
-            body2 = json.dumps(payload).encode("utf-8")
-            conn = http.client.HTTPSConnection("openrouter.ai", timeout=REQUEST_TIMEOUT, context=SSL_CONTEXT)
-            conn.request("POST", "/api/v1/chat/completions", body=body2, headers={
-                "Content-Type": "application/json", "Accept": "application/json",
-                "User-Agent": "ZeroxAI-Telegram-Bot/1.0",
-                "Authorization": f"Bearer {or_key}",
-                "HTTP-Referer": "https://zeroxaibot.fly.dev",
-                "X-Title": "ZeroxAI",
-            })
-            resp = conn.getresponse()
-            raw = resp.read().decode("utf-8")
-            conn.close()
-            if resp.status == 200:
-                data = json.loads(raw)
-                return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-        except Exception as e:
-            last_error = f"OpenRouter fallback: {e}"
-    # fallback to Mistral
-    try:
-        return call_mistral(messages, "mistral-large-latest")
-    except Exception as e:
-        last_error = f"Mistral fallback: {e}"
-    return f"Не удалось получить ответ: {last_error}"
+    print(f"Groq: all keys failed, last error: {last_error}", flush=True)
+    return f"Ошибка Groq: {last_error}"
 
 
 def extract_error_message(raw):
@@ -2356,6 +2479,137 @@ def handle_callback_query(token, callback_query):
         return
     telegram_request(token, "answerCallbackQuery", {"callback_query_id": cq_id})
 
+    # ---- Shop callbacks ----
+    if data == "shop_free":
+        if is_pro_user(user_id):
+            remove_pro_user(user_id)
+            text = "\U0001F535 Вы переключены на <b>Free</b>-тариф."
+        else:
+            text = "\U0001F535 У вас уже бесплатный тариф."
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "\u25C0 В магазин", "callback_data": "shop_main"},
+            ]]},
+        })
+        return
+
+    if data == "shop_pro_info":
+        if is_pro_user(user_id):
+            days = pro_days_left(user_id)
+            text = f"\u2B50\uFE0F У вас уже активна Pro-подписка! Осталось {days} дн."
+            reply_markup = {"inline_keyboard": [[
+                {"text": "\u25C0 В магазин", "callback_data": "shop_main"},
+            ]]}
+        else:
+            text = (
+                "\u2B50 <b>Pro-подписка</b>\n\n"
+                "\u2022 Модель: DeepSeek Chat\n"
+                "\u2022 Лимит: 10 000 токенов / 12ч\n"
+                "\u2022 Срок: 30 дней\n"
+                "\u2022 Цена: 100 \u2B50\n\n"
+                "Оплата через Telegram Stars."
+            )
+            reply_markup = {"inline_keyboard": [[
+                {"text": "\u25C0 Назад", "callback_data": "shop_main"},
+                {"text": f"\u2B50 Купить за 100 \u2B50", "callback_data": "shop_pro_buy"},
+            ]]}
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML",
+            "reply_markup": reply_markup,
+        })
+        return
+
+    if data == "shop_pro_buy":
+        price_stars = 100
+        result = telegram_request(token, "sendInvoice", {
+            "chat_id": chat_id,
+            "title": "\u2B50 ZeroxAI Pro",
+            "description": (
+                "\u2714\uFE0F Доступ к мощной модели ZeroxAI Pro\n"
+                "\u2714\uFE0F Более умные и развёрнутые ответы\n"
+                "\u2714\uFE0F Приоритетная обработка запросов\n"
+                "\u2714\uFE0F На 30 дней — продлевается раз в месяц"
+            ),
+            "payload": f"pro_{user_id}",
+            "provider_token": "",
+            "currency": "XTR",
+            "prices": [{"label": "\u2B50 ZeroxAI Pro", "amount": price_stars}],
+        })
+        if not result.get("ok"):
+            telegram_request(token, "editMessageText", {
+                "chat_id": chat_id, "message_id": msg_id,
+                "text": f"\u274C Ошибка: {result.get('description', 'неизвестно')}",
+            })
+        return
+
+    if data == "shop_tokens":
+        text = (
+            "\U0001F916 <b>Купить токены</b>\n\n"
+            "1 \u2B50 = 100 токенов\n"
+            "Докупленные токены не сгорают.\n\n"
+            "Выберите количество:"
+        )
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "50 (\u2B501)", "callback_data": "shop_tokens_buy_50"},
+                        {"text": "100 (\u2B501)", "callback_data": "shop_tokens_buy_100"},
+                    ],
+                    [
+                        {"text": "200 (\u2B502)", "callback_data": "shop_tokens_buy_200"},
+                        {"text": "300 (\u2B503)", "callback_data": "shop_tokens_buy_300"},
+                    ],
+                    [
+                        {"text": "\u270F\uFE0F Своё количество", "callback_data": "shop_tokens_custom"},
+                    ],
+                    [
+                        {"text": "\u25C0 Назад", "callback_data": "shop_main"},
+                    ],
+                ]
+            },
+        })
+        return
+
+    if data == "shop_tokens_custom":
+        PENDING_TOKEN_AMOUNTS[user_id] = True
+        text = "\u270F\uFE0F Введите нужное количество токенов (число, от 50):"
+        telegram_request(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "\u25C0 Назад", "callback_data": "shop_tokens"},
+            ]]},
+        })
+        return
+
+    if data.startswith("shop_tokens_buy_"):
+        try:
+            amount = int(data.split("_")[-1])
+        except (ValueError, IndexError):
+            return
+        stars = max(1, (amount + TOKEN_STARS_RATE - 1) // TOKEN_STARS_RATE)
+        result = telegram_request(token, "sendInvoice", {
+            "chat_id": chat_id,
+            "title": f"\U0001F916 {amount} токенов",
+            "description": f"Пополнение токенов ZeroxAI — {amount} токенов",
+            "payload": f"tokens_{user_id}_{amount}",
+            "provider_token": "",
+            "currency": "XTR",
+            "prices": [{"label": f"\U0001F916 {amount} токенов", "amount": stars}],
+        })
+        if not result.get("ok"):
+            telegram_request(token, "editMessageText", {
+                "chat_id": chat_id, "message_id": msg_id,
+                "text": f"\u274C Ошибка: {result.get('description', 'неизвестно')}",
+            })
+        return
+
+    if data == "shop_main":
+        shop(token, chat_id, user_id, None, None)
+        return
+
     if data == "menu_pro":
         if is_pro_user(user_id):
             text = "\u2B50\uFE0F У вас активна Pro-подписка! Осталось {} дн.".format(pro_days_left(user_id)) + "\nИспользуется ZeroxAI Pro."
@@ -2398,8 +2652,7 @@ def handle_callback_query(token, callback_query):
             "chat_id": chat_id, "message_id": msg_id, "text": text,
             "reply_markup": {
                 "inline_keyboard": [[
-                    {"text": "\u2B50 Подписка", "callback_data": "menu_pro"},
-                    {"text": "\U0001F916 Токены", "callback_data": "menu_tokens"},
+                    {"text": "\U0001F6D2 Магазин", "callback_data": "shop_main"},
                 ]]
             },
         })
@@ -2443,7 +2696,7 @@ KNOWN_COMMANDS = {
     "/team", "/lightlist", "/rules", "/commands", "/stats", "/report",
     "/warn", "/warns", "/unwarn",
     "/mute", "/unmute", "/kick", "/ban", "/unban",
-    "/role", "/roles", "/staff", "/setrules",
+    "/role", "/staff", "/setrules",
     "/ticket", "/closeticket", "/feedback", "/announce", "/userinfo", "/support",
     "/clean", "/pin", "/unpin", "/slowmode", "/say", "/welcome", "/delete", "/banlist", "/shop",
     "/joke", "/coin", "/dice", "/roll", "/choose", "/8ball", "/hug", "/slap", "/quote", "/meme",
@@ -2451,7 +2704,8 @@ KNOWN_COMMANDS = {
     "/transfer", "/give", "/send",
     "/addcoin", "/addmoney", "/removecoin", "/removemoney",
     "/stopcasino", "/startcasino", "/stopbot", "/startbot", "/statbot", "/tokens",
-    "/server", "/addsticker", "/mypro", "/buypro", "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
+    "/server", "/addsticker", "/mypro", "/buypro",
+ "/top", "/ben", "/grantpro", "/luckset", "/resettokens", "/buy", "/info",
     "/hide", "/savehistory", "/answer",
     "/giveall", "/addcoin", "/testshop", "/logs", "/setsub",
     "/setlocalmodel", "/trainmodel",
@@ -2678,6 +2932,8 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 set_pro_user(tid, interval)
                 reply(f"\U0001F4E1 Выдана подписка <b>PRO</b> на {label}.")
                 return True
+
+
 
             if cmd == "/setlocalmodel":
                 global _LOCAL_PRO_MODE
@@ -3102,6 +3358,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
 
         if cmd in ("/start", "/help"):
             name = user.get("first_name") or user.get("username") or "пользователь"
+            kb = _menu_kb(is_pm=not is_group)
             reply(
                 f"⚡ ZEROXAI PROJECT STUDIO\n\n"
                 f"Привет, {name}! Я создаю и исправляю полноценные проекты:\n"
@@ -3113,7 +3370,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 "Напиши задачу обычным сообщением или используй:\n"
                 "/project <подробное описание>\n\n"
                 "Создатель: Эрик Арутюнян",
-                reply_markup=_menu_kb(),
+                reply_markup=kb,
             )
             return True
 
@@ -3254,6 +3511,9 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     try:
                         names = []
                         for uid in members[:5]:
+                            if isinstance(uid, str) and uid.startswith("@"):
+                                names.append(uid)
+                                continue
                             try:
                                 uinfo = telegram_request(token, "getChatMember", {"chat_id": chat_id, "user_id": int(uid)})
                                 u = uinfo.get("result", {}).get("user", {})
@@ -3297,7 +3557,6 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                      "/ping — проверка",
                      "/id — ID чата/пользователя",
                      "/myrole — моя роль",
-                     "/roles — состав участников по ролям",
                      "/team — команда чата",
                      "/lightlist — уровни доступа",
                      "/rules — правила",
@@ -3346,7 +3605,6 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                      "/role remove — удалить роль",
                      "/role give — выдать роль",
                      "/role take — забрать роль",
-                     "/roles — состав участников по ролям",
                      "/role list — список ролей",
                      "/role info — информация о роли",
                      "/setrules — установить правила",
@@ -3867,11 +4125,31 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if not target:
                 reply("Укажите пользователя.")
                 return True
-            minutes = 10
-            for arg in args:
-                if arg.isdigit():
-                    minutes = int(arg)
-                    break
+            target_orig = target
+            if isinstance(target, str) and target.startswith("@"):
+                resolved = resolve_username(token, target, chat_id)
+                if resolved:
+                    target = resolved
+            if isinstance(target, str) and target.startswith("@"):
+                try:
+                    r = telegram_request(token, "restrictChatMember", {
+                        "chat_id": chat_id, "user_id": target,
+                        "permissions": {"can_send_messages": False},
+                    })
+                    if r and r.get("ok"):
+                        reply(f"\U0001F507 {target_orig} заглушён.")
+                        return True
+                except Exception:
+                    pass
+                reply(f"\u2757 @{target.lstrip('@')} не отвечал боту — нет ID. Ответьте на сообщение пользователя.")
+                return True
+            minutes = 60
+            if len(args) >= 2:
+                try:
+                    minutes = max(1, int(re.sub(r"\D", "", args[1])))
+                except:
+                    pass
+            import time
             until = int(time.time()) + minutes * 60
             try:
                 telegram_request(token, "restrictChatMember", {
@@ -3881,9 +4159,9 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 })
                 cd = get_chat_data(chat_id)
                 cd.setdefault("muted", {})
-                cd["muted"][str(target)] = until
+                cd["muted"][str(target)] = {"until": until, "minutes": minutes}
                 save_data()
-                reply(f"\U0001F507 {target} заглушён на {format_minutes_duration(minutes)}.")
+                reply(f"\U0001F507 {target_orig} заглушён на {format_minutes_duration(minutes)}.")
             except Exception as e:
                 reply(f"\u274C Ошибка: {e}")
             return True
@@ -3893,6 +4171,28 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             target = parse_user_ref(message, args)
             if not target:
                 reply("Укажите пользователя.")
+                return True
+            target_orig = target
+            if isinstance(target, str) and target.startswith("@"):
+                resolved = resolve_username(token, target, chat_id)
+                if resolved:
+                    target = resolved
+            if isinstance(target, str) and target.startswith("@"):
+                try:
+                    r = telegram_request(token, "restrictChatMember", {
+                        "chat_id": chat_id, "user_id": target,
+                        "permissions": {
+                            "can_send_messages": True, "can_send_media_messages": True,
+                            "can_send_polls": True, "can_send_other_messages": True,
+                            "can_add_web_page_previews": True,
+                        },
+                    })
+                    if r and r.get("ok"):
+                        reply(f"\U0001F50A {target_orig} разглушён.")
+                        return True
+                except Exception:
+                    pass
+                reply(f"\u2757 @{target.lstrip('@')} не отвечал боту — нет ID. Ответьте на сообщение пользователя.")
                 return True
             try:
                 telegram_request(token, "restrictChatMember", {
@@ -3906,7 +4206,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 cd = get_chat_data(chat_id)
                 cd.get("muted", {}).pop(str(target), None)
                 save_data()
-                reply(f"\U0001F50A {target} разглушён.")
+                reply(f"\U0001F50A {target_orig} разглушён.")
             except Exception as e:
                 reply(f"\u274C Ошибка: {e}")
             return True
@@ -3917,11 +4217,27 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if not target:
                 reply("Укажите пользователя.")
                 return True
+            target_orig = target
+            if isinstance(target, str) and target.startswith("@"):
+                resolved = resolve_username(token, target, chat_id)
+                if resolved:
+                    target = resolved
+            if isinstance(target, str) and target.startswith("@"):
+                try:
+                    r = telegram_request(token, "banChatMember", {"chat_id": chat_id, "user_id": target})
+                    if r and r.get("ok"):
+                        telegram_request(token, "unbanChatMember", {"chat_id": chat_id, "user_id": target})
+                        reply(f"\U0001F4A2 {target_orig} кикнут.")
+                        return True
+                except Exception:
+                    pass
+                reply(f"\u2757 @{target.lstrip('@')} не отвечал боту — нет ID. Ответьте на сообщение пользователя.")
+                return True
             try:
                 telegram_request(token, "banChatMember", {"chat_id": chat_id, "user_id": target})
                 telegram_request(token, "unbanChatMember", {"chat_id": chat_id, "user_id": target})
                 reason = cmd_text
-                reply(f"\U0001F4A2 {target} кикнут.{f' Причина: {reason}' if reason else ''}")
+                reply(f"\U0001F4A2 {target_orig} кикнут.{f' Причина: {reason}' if reason else ''}")
             except Exception as e:
                 reply(f"\u274C Ошибка: {e}")
             return True
@@ -3932,6 +4248,26 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
             if not target:
                 reply("Укажите пользователя.")
                 return True
+            target_orig = target
+            if isinstance(target, str) and target.startswith("@"):
+                resolved = resolve_username(token, target, chat_id)
+                if resolved:
+                    target = resolved
+            if isinstance(target, str) and target.startswith("@"):
+                try:
+                    r = telegram_request(token, "banChatMember", {"chat_id": chat_id, "user_id": target})
+                    if r and r.get("ok"):
+                        cd = get_chat_data(chat_id)
+                        cd.setdefault("banned", [])
+                        if target not in cd["banned"]:
+                            cd["banned"].append(target)
+                        save_data()
+                        reply(f"\U0001F534 {target_orig} забанен.")
+                        return True
+                except Exception:
+                    pass
+                reply(f"\u2757 @{target.lstrip('@')} не отвечал боту — нет ID. Ответьте на сообщение пользователя.")
+                return True
             try:
                 telegram_request(token, "banChatMember", {"chat_id": chat_id, "user_id": target})
                 cd = get_chat_data(chat_id)
@@ -3940,7 +4276,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     cd["banned"].append(str(target))
                 save_data()
                 reason = cmd_text
-                reply(f"\U0001F534 {target} забанен.{f' Причина: {reason}' if reason else ''}")
+                reply(f"\U0001F534 {target_orig} забанен.{f' Причина: {reason}' if reason else ''}")
             except Exception as e:
                 reply(f"\u274C Ошибка: {e}")
             return True
@@ -4016,16 +4352,24 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 if not target:
                     reply("Укажите пользователя.")
                     return True
+                target_orig = target
+                if isinstance(target, str) and target.startswith("@"):
+                    resolved = resolve_username(token, target, chat_id)
+                    if resolved:
+                        target = resolved
                 role_name = args[-1]
                 cd = get_chat_data(chat_id)
                 if role_name not in cd["roles"]:
                     reply(f"Роль «{role_name}» не найдена. Создайте её через /role add")
                     return True
-                if has_level(chat_id, target, cd["roles"][role_name]):
-                    pass
-                cd["users"][str(target)] = role_name
+                sid = str(target)
+                # remove old role for this user (same key or @username keys that resolve to same ID)
+                for k in list(cd.get("users", {}).keys()):
+                    if k == sid or (k.startswith("@") and resolve_username(token, k, chat_id) == target):
+                        del cd["users"][k]
+                cd["users"][sid] = role_name
                 save_data()
-                reply(f"\u2705 Пользователю {target} выдана роль «{role_name}».")
+                reply(f"\u2705 Пользователю {target_orig} выдана роль «{role_name}».")
                 return True
 
             if sub == "take":
@@ -4037,15 +4381,28 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 if not target:
                     reply("Укажите пользователя.")
                     return True
+                target_orig = target
+                if isinstance(target, str) and target.startswith("@"):
+                    resolved = resolve_username(token, target, chat_id)
+                    if resolved:
+                        target = resolved
                 role_name = args[-1]
                 cd = get_chat_data(chat_id)
                 sid = str(target)
-                if cd.get("users", {}).get(sid) != role_name:
-                    reply(f"У пользователя {target} нет роли «{role_name}».")
+                # check both exact key and any @username keys that might resolve
+                found = cd.get("users", {}).get(sid)
+                if not found:
+                    for k, v in list(cd.get("users", {}).items()):
+                        if k.startswith("@") and resolve_username(token, k, chat_id) == target:
+                            found = v
+                            sid = k
+                            break
+                if not found or found != role_name:
+                    reply(f"У пользователя {target_orig} нет роли «{role_name}».")
                     return True
                 del cd["users"][sid]
                 save_data()
-                reply(f"\u2705 У пользователя {target} забрана роль «{role_name}».")
+                reply(f"\u2705 У пользователя {target_orig} забрана роль «{role_name}».")
                 return True
 
             if sub == "list":
@@ -4080,6 +4437,9 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     try:
                         names = []
                         for uid in members[:10]:
+                            if isinstance(uid, str) and uid.startswith("@"):
+                                names.append(uid)
+                                continue
                             try:
                                 uinfo = telegram_request(token, "getChatMember", {"chat_id": chat_id, "user_id": int(uid)})
                                 u = uinfo.get("result", {}).get("user", {})
@@ -4092,27 +4452,55 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 reply("\n".join(lines))
                 return True
 
-            reply("Подкоманда не распознана. Используйте: add, remove, give, take, list, info")
-            return True
-
-        if cmd == "/roles":
-            cd = get_chat_data(chat_id)
-            if not cd.get("users"):
-                reply("Нет пользователей с ролями.")
+            if sub == "chapter":
+                if len(args) < 2:
+                    reply("Использование: /role chapter create/delete/list")
+                    return True
+                if not require(8): return True
+                csub = args[1]
+                cd = get_chat_data(chat_id)
+                chapters = cd.setdefault("chapters", [])
+                if csub == "create":
+                    rest = " ".join(args[2:]) if len(args) > 2 else ""
+                    m = __import__("re").match(r'"(.+)"\s*(\d+)-(\d+)', rest)
+                    if not m:
+                        reply('Использование: /role chapter create "Название" 1-5')
+                        return True
+                    ch_name = m.group(1)
+                    lstart, lend = int(m.group(2)), int(m.group(3))
+                    if any(c["name"].lower() == ch_name.lower() for c in chapters):
+                        reply(f"Раздел «{ch_name}» уже существует.")
+                        return True
+                    chapters.append({"name": ch_name, "level_start": lstart, "level_end": lend})
+                    save_data()
+                    reply(f"✅ Раздел «{ch_name}» создан (уровни {lstart}-{lend}).")
+                    return True
+                if csub == "delete":
+                    if len(args) < 3:
+                        reply("Укажите название раздела.")
+                        return True
+                    ch_name = args[2]
+                    for i, c in enumerate(chapters):
+                        if c["name"].lower() == ch_name.lower():
+                            chapters.pop(i)
+                            save_data()
+                            reply(f"✅ Раздел «{ch_name}» удалён.")
+                            return True
+                    reply(f"Раздел «{ch_name}» не найден.")
+                    return True
+                if csub == "list":
+                    if not chapters:
+                        reply("Нет созданных разделов.")
+                        return True
+                    lines = ["📂 Разделы:"]
+                    for c in chapters:
+                        lines.append(f"• {c['name']} — уровни {c['level_start']}-{c['level_end']}")
+                    reply("\n".join(lines))
+                    return True
+                reply("Использование: /role chapter create/delete/list")
                 return True
-            lines = ["👥 Состав:"]
-            for uid, role_name in sorted(cd["users"].items(), key=lambda x: x[1]):
-                rlevel = cd.get("roles", {}).get(role_name, "?")
-                try:
-                    member = telegram_request(token, "getChatMember", {"chat_id": chat_id, "user_id": int(uid)})
-                    u = member.get("result", {}).get("user", {})
-                    name = u.get("first_name") or u.get("username") or f"id{uid}"
-                    username = u.get("username", "")
-                    tag = f" (@{username})" if username else ""
-                    lines.append(f"• {name}{tag} — {role_name} (ур.{rlevel})")
-                except Exception:
-                    lines.append(f"• id{uid} — {role_name} (ур.{rlevel})")
-            reply("\n".join(lines))
+
+            reply("Подкоманда не распознана. Используйте: add, remove, give, take, list, info, chapter")
             return True
 
         if cmd == "/staff":
@@ -4162,24 +4550,57 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     if pattern in key or key in pattern:
                         return emoji
                 return "\U0001F539"
+            def fmt_member(uid):
+                if isinstance(uid, str) and uid.startswith("@"):
+                    return f"\u2022 {uid}"
+                try:
+                    member = telegram_request(token, "getChatMember", {"chat_id": chat_id, "user_id": int(uid)})
+                    u = member.get("result", {}).get("user", {})
+                    username = u.get("username", "")
+                    if username:
+                        return f"\u2022 @{username}"
+                    name = u.get("first_name") or f"id{uid}"
+                    return f"\u2022 {name}"
+                except Exception:
+                    return f"\u2022 id{uid}"
+            chapters = cd.get("chapters", [])
+            sorted_roles = sorted(by_role.keys(), key=lambda x: -roles_map.get(x, 0))
             lines = ["\U0001F465 \u0421\u043e\u0441\u0442\u0430\u0432 \u043a\u043e\u043c\u0430\u043d\u0434\u044b:"]
-            for rname in sorted(by_role.keys(), key=lambda x: roles_map.get(x, 999)):
-                uids = by_role[rname]
-                level = roles_map.get(rname, "?")
-                members = []
-                for uid in uids:
-                    try:
-                        member = telegram_request(token, "getChatMember", {"chat_id": chat_id, "user_id": int(uid)})
-                        u = member.get("result", {}).get("user", {})
-                        name = u.get("first_name") or u.get("username") or f"id{uid}"
-                        username = u.get("username", "")
-                        tag = f" @{username}" if username else ""
-                        members.append(f"\u2022 {tag}" if username else f"\u2022 {name}")
-                    except Exception:
-                        members.append(f"\u2022 id{uid}")
-                em = role_emoji(rname)
-                lines.append(f"\n{em} {rname} \u2014 \u0423\u0440\u043e\u0432\u0435\u043d\u044c {level}")
-                lines.extend(members)
+            in_chapter = set()
+            for ch in chapters:
+                ch_roles = [r for r in sorted_roles if ch["level_start"] <= roles_map.get(r, 0) <= ch["level_end"]]
+                in_chapter.update(ch_roles)
+            sorted_chapters = sorted(chapters, key=lambda c: -c["level_end"])
+            for ch in sorted_chapters:
+                ch_roles = [r for r in sorted_roles if ch["level_start"] <= roles_map.get(r, 0) <= ch["level_end"]]
+                if not ch_roles:
+                    continue
+                lines.append(f"\n\U0001F4C2 {ch['name']} (\u0443\u0440\u043e\u0432\u043d\u0438 {ch['level_start']}-{ch['level_end']}):")
+                for rname in ch_roles:
+                    uids = by_role[rname]
+                    level = roles_map.get(rname, "?")
+                    em = role_emoji(rname)
+                    lines.append(f"{em} {rname} \u2014 \u0423\u0440\u043e\u0432\u0435\u043d\u044c {level}")
+                    for uid in uids:
+                        lines.append(fmt_member(uid))
+                    lines.append("")
+            remaining = [r for r in sorted_roles if r not in in_chapter]
+            if remaining:
+                if chapters:
+                    lines.pop()
+                max_lvl = max(roles_map.get(r, 1) for r in remaining)
+                lines.append(f"\n\U0001F4C2 \u041D\u0435 \u0438\u0437\u0432\u0435\u0441\u0442\u0435\u043d (\u0443\u0440\u043e\u0432\u043d\u0438 1-{max_lvl}):")
+                first = True
+                for rname in remaining:
+                    if not first:
+                        lines.append("")
+                    first = False
+                    uids = by_role[rname]
+                    level = roles_map.get(rname, "?")
+                    em = role_emoji(rname)
+                    lines.append(f"{em} {rname} \u2014 \u0423\u0440\u043e\u0432\u0435\u043d\u044c {level}")
+                    for uid in uids:
+                        lines.append(fmt_member(uid))
             reply("\n".join(lines).strip())
             return True
 
@@ -4517,11 +4938,24 @@ def handle_update(token, update):
             msg = update["message"]
             if "successful_payment" in msg:
                 user_id = msg.get("from", {}).get("id")
+                payload = (msg.get("successful_payment") or {}).get("invoice_payload", "")
                 if user_id:
-                    add_pro_user(user_id)
-                    reply_message(token, msg["chat"]["id"],
-                        "\u2B50\uFE0F Поздравляю! Вы стали Pro-пользователем! "
-                        "Теперь вы используете ZeroxAI Pro — более мощную модель.", msg.get("message_id"))
+                    if payload.startswith("tokens_"):
+                        parts = payload.split("_")
+                        if len(parts) >= 3:
+                            try:
+                                amount = int(parts[-1])
+                                add_bonus_tokens(user_id, amount)
+                                reply_message(token, msg["chat"]["id"],
+                                    f"\U0001F916 Пополнение на {amount} токенов успешно!",
+                                    msg.get("message_id"))
+                            except ValueError:
+                                pass
+                    else:
+                        add_pro_user(user_id)
+                        reply_message(token, msg["chat"]["id"],
+                            "\u2B50\uFE0F Поздравляю! Вы стали Pro-пользователем! "
+                            "Теперь вы используете ZeroxAI Pro — более мощную модель.", msg.get("message_id"))
                 return
             handle_message(token, msg)
         except BaseException as e:
@@ -4545,9 +4979,29 @@ def handle_message(token, message):
     chat_id = chat.get("id")
     user_id = user.get("id", chat_id)
     text = (message.get("text") or "").strip()
+    uname = user.get("username", "")
+    if uname:
+        _username_cache[uname.lower()] = user_id
 
     if not chat_id:
         return
+    # track new chat members (join events)
+    new_members = message.get("new_chat_members")
+    if new_members:
+        for m in new_members:
+            mid = m.get("id")
+            muname = m.get("username", "")
+            if mid and muname:
+                _username_cache[muname.lower()] = mid
+                try:
+                    with db_cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO users (user_id, balance, username) VALUES (%s, 0, %s) "
+                            "ON CONFLICT (user_id) DO UPDATE SET username = %s WHERE users.username != %s",
+                            (mid, muname, muname, muname)
+                        )
+                except Exception:
+                    pass
     if not text:
         if message.get("photo") or message.get("document"):
             msg_id = message.get("message_id")
@@ -4627,12 +5081,14 @@ def handle_message(token, message):
                 chat_id,
                 "🚀 Опишите проект после команды.\n\nПример:\n/project Создай плагин PocketMine-MP 5 для системы авторизации с config.yml и README",
                 message.get("message_id"),
-                reply_markup=_menu_kb(),
+                reply_markup=_menu_kb(is_pm=not is_group),
             )
             return
-        text = description
         force_project = True
-    elif text.startswith("/"):
+        text = description  # strip /project prefix before AI processing
+
+    # handle commands (skip /project since it's handled above)
+    if text.startswith("/") and not text.lower().startswith("/project"):
         cmd_name = text.split()[0]
         if "@" in cmd_name:
             text = text.replace(cmd_name, cmd_name.split("@")[0], 1)
@@ -4641,7 +5097,7 @@ def handle_message(token, message):
         return  # don't send unknown commands to AI
 
     # handle reply keyboard buttons
-    km = _menu_kb()
+    km = _menu_kb(is_pm=not is_group)
     if text == "🚀 Создать проект":
         reply_message(
             token,
@@ -4689,6 +5145,35 @@ def handle_message(token, message):
                 f"\U0001F916 Токены ({tier}):\n{bar}\n{used:,} / {limit:,} ({used * 100 // limit if limit else 0}%)\nВосстановление: {hours_left}h / {period}h", None, reply_markup=km)
         return
 
+    if text == "🛒 Магазин":
+        shop(token, chat_id, user_id, uid, km)
+        return
+
+    # custom token amount input
+    if PENDING_TOKEN_AMOUNTS.get(user_id):
+        del PENDING_TOKEN_AMOUNTS[user_id]
+        try:
+            amount = int(text.strip())
+            if amount < 50:
+                reply_message(token, chat_id, "\u274C Минимум 50 токенов.", message.get("message_id"), reply_markup=km)
+                return
+        except ValueError:
+            reply_message(token, chat_id, "\u274C Введите число (например, 150).", message.get("message_id"), reply_markup=km)
+            return
+        stars = max(1, (amount + TOKEN_STARS_RATE - 1) // TOKEN_STARS_RATE)
+        result = telegram_request(token, "sendInvoice", {
+            "chat_id": chat_id,
+            "title": f"\U0001F916 {amount} токенов",
+            "description": f"Пополнение токенов ZeroxAI — {amount} токенов",
+            "payload": f"tokens_{user_id}_{amount}",
+            "provider_token": "",
+            "currency": "XTR",
+            "prices": [{"label": f"\U0001F916 {amount} токенов", "amount": stars}],
+        })
+        if not result.get("ok"):
+            reply_message(token, chat_id, f"\u274C Ошибка: {result.get('description', 'неизвестно')}", message.get("message_id"), reply_markup=km)
+        return
+
     # Build the AI request once. Project mode receives a stronger coding prompt.
     ai_messages = build_messages(
         chat_id,
@@ -4720,10 +5205,11 @@ def handle_message(token, message):
     think_msg_id = None
     try:
         png_bytes = _make_thinking_png()
-        r = telegram_upload(token, "sendSticker", {"chat_id": chat_id}, "sticker", png_bytes, "thinking.png", "image/png")
+        r = telegram_upload(token, "sendSticker", {"chat_id": chat_id}, "sticker", png_bytes, "sticker.webp", "image/webp")
         if r.get("ok"):
             think_msg_id = r["result"]["message_id"]
-    except:
+    except Exception as e:
+        print(f"Sticker error: {e}", flush=True)
         r = telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": ". . ."})
         if r.get("ok"):
             think_msg_id = r["result"]["message_id"]
@@ -4803,7 +5289,7 @@ def handle_message(token, message):
 
     # persist menu keyboard
     try:
-        telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": "\u200B", "reply_markup": _menu_kb()})
+        telegram_request(token, "sendMessage", {"chat_id": chat_id, "text": "\u200B", "reply_markup": _menu_kb(is_pm=not is_group)})
     except Exception:
         pass
 
@@ -4917,7 +5403,7 @@ def webhook_handler_factory(token):
                         self.send_response(400)
                     else:
                         messages = build_messages(chat_id, user_text, data.get("username"), data.get("first_name"), user_id)
-                        answer = call_ai(messages, int(user_id)) if user_id else call_groq(messages)
+                        answer = call_ai(messages, int(user_id)) if user_id else call_openrouter(messages)
                         remember(chat_id, user_text, answer)
                         resp = {"response": answer}
                         self.send_response(200)
@@ -4978,6 +5464,13 @@ def main():
     load_data()
 
     token = get_env("TELEGRAM_BOT_TOKEN")
+    global _BOT_TOKEN
+    _BOT_TOKEN = token
+    for admin_username in ADMIN_TICKET_TARGETS:
+        resolved = resolve_username(token, admin_username)
+        if resolved:
+            _super_admin_ids.add(resolved)
+    migrate_legacy_user_keys(token)
 
     while True:
         try:
@@ -5018,29 +5511,30 @@ def main():
         pass
 
 
-    while True:
-        try:
-            if _local_bot_alive():
-                print("Local bot is alive — Railway standby. Checking again in 60s...", flush=True)
-                time.sleep(60)
-                continue
-            if set_webhook(token):
-                port = int(os.getenv("WEBHOOK_PORT", os.getenv("PORT", "8080")))
-                try:
-                    server = ThreadingHTTPServer(("0.0.0.0", port), webhook_handler_factory(token))
-                except OSError:
-                    print(f"Port {port} in use, falling back to polling mode", flush=True)
-                    _run_polling_bot(token)
-                    continue
-                print(f"Webhook server listening on port {port}", flush=True)
-                server.serve_forever()
-            else:
+    try:
+        if _local_bot_alive():
+            print("Local bot may be alive elsewhere. Waiting 30s...", flush=True)
+            time.sleep(30)
+    except Exception:
+        pass
+
+    try:
+        if set_webhook(token):
+            port = int(os.getenv("WEBHOOK_PORT", os.getenv("PORT", "8080")))
+            try:
+                server = ThreadingHTTPServer(("0.0.0.0", port), webhook_handler_factory(token))
+            except OSError:
+                print(f"Port {port} in use, falling back to polling mode", flush=True)
                 _run_polling_bot(token)
-        except BaseException as e:
-            print(f"Bot crashed: {e}, restarting in 10s...", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
-            time.sleep(10)
+                return
+            print(f"Webhook server listening on port {port}", flush=True)
+            server.serve_forever()
+        else:
+            _run_polling_bot(token)
+    except BaseException as e:
+        print(f"Bot crashed: {e}, restarting...", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
 
 
 def _run_polling_bot(token):
