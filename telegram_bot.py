@@ -873,13 +873,41 @@ def _vpn_get_peer_keys(user_id):
     return VPN_USER_PEER_KEYS[user_id]
 
 
+# Cloudflare WARP — бесплатный встроенный VPN сервер (без карт, без регистрации)
+WARP_SERVER_ID = 999
+WARP_PUBLIC_KEY = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+WARP_ENDPOINT = "engage.cloudflareclient.com:2408"
+WARP_MTU = 1280
+
+
+def vpn_is_warp(server):
+    return server and server.get("id") == WARP_SERVER_ID
+
+
+def vpn_warp_server():
+    return {
+        "id": WARP_SERVER_ID,
+        "host": "engage.cloudflareclient.com",
+        "port": 2408,
+        "country": "Cloudflare",
+        "city": "WARP",
+        "location": "Cloudflare WARP (бесплатно, без регистрации)",
+        "public_key": WARP_PUBLIC_KEY,
+        "endpoint": WARP_ENDPOINT,
+        "active": True,
+        "ping_ms": None,
+        "load_pct": 0,
+        "flag": "💨",
+    }
+
+
 def vpn_get_servers():
-    """Return list of registered VPN servers from DB."""
+    """Return list of registered VPN servers + WARP as first entry."""
+    servers = [vpn_warp_server()]
     try:
         with db_cursor() as cur:
             cur.execute("SELECT id, host, port, country, city, location, public_key, endpoint, active, ping_ms, load_pct, created_at, flag FROM vpn_servers WHERE active = TRUE ORDER BY country, city")
             rows = cur.fetchall()
-            servers = []
             for r in rows:
                 servers.append({
                     "id": r[0], "host": r[1], "port": r[2] or VPN_WG_PORT,
@@ -891,11 +919,13 @@ def vpn_get_servers():
             return servers
     except Exception as e:
         print(f"vpn_get_servers error: {e}", file=sys.stderr)
-        return []
+        return servers
 
 
 def vpn_get_server(server_id):
-    """Get a single server by ID."""
+    """Get a single server by ID. Handles WARP virtual server."""
+    if server_id == WARP_SERVER_ID:
+        return vpn_warp_server()
     try:
         with db_cursor() as cur:
             cur.execute("SELECT id, host, port, country, city, location, public_key, endpoint, active, ping_ms, load_pct, flag FROM vpn_servers WHERE id = %s", (server_id,))
@@ -963,8 +993,33 @@ def vpn_get_user_config(user_id, server_id):
 
 def vpn_create_user_config(user_id, server):
     """Generate and store a WireGuard config for a user on a given server."""
+    if vpn_is_warp(server):
+        # WARP uses a different config format
+        keys = _vpn_get_peer_keys(user_id)
+        config = f"""[Interface]
+PrivateKey = {keys["private"]}
+Address = 172.16.0.2/32
+DNS = 1.1.1.1, 2606:4700:4700::1111
+MTU = {WARP_MTU}
+
+[Peer]
+PublicKey = {WARP_PUBLIC_KEY}
+AllowedIPs = {VPN_ALLOWED_IPS}
+Endpoint = {WARP_ENDPOINT}
+"""
+        try:
+            with db_cursor() as cur:
+                cur.execute(
+                    """INSERT INTO vpn_user_configs (user_id, server_id, config_text, assigned_ip, wg_private_key, wg_public_key, active)
+                       VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+                       ON CONFLICT (user_id, server_id) DO UPDATE SET config_text=EXCLUDED.config_text, active=TRUE""",
+                    (user_id, WARP_SERVER_ID, config, "172.16.0.2", keys["private"], keys["public"])
+                )
+        except Exception:
+            pass
+        return config
+
     keys = _vpn_get_peer_keys(user_id)
-    # assign next available IP
     assigned_ip = _vpn_assign_ip(server["id"], user_id)
     if not assigned_ip:
         return None
@@ -1044,6 +1099,8 @@ def vpn_get_favorites(user_id):
 
 
 def vpn_toggle_favorite(user_id, server_id):
+    if server_id == WARP_SERVER_ID:
+        return False  # WARP не добавляем в избранное
     try:
         with db_cursor() as cur:
             cur.execute("SELECT 1 FROM vpn_favorites WHERE user_id = %s AND server_id = %s", (user_id, server_id))
@@ -1059,6 +1116,22 @@ def vpn_toggle_favorite(user_id, server_id):
 
 def vpn_get_active_config(user_id):
     """Get user's currently active VPN config."""
+    # Check WARP config first
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT config_text, assigned_ip FROM vpn_user_configs WHERE user_id = %s AND server_id = %s AND active = TRUE LIMIT 1",
+                (user_id, WARP_SERVER_ID)
+            )
+            r = cur.fetchone()
+            if r:
+                warp = vpn_warp_server()
+                return {"id": 0, "server_id": WARP_SERVER_ID, "config_text": r[0], "assigned_ip": r[1],
+                        "country": warp["country"], "city": warp["city"], "host": warp["host"],
+                        "location": warp["location"], "ping_ms": None, "flag": warp["flag"]}
+    except Exception:
+        pass
+    # Check DB servers
     try:
         with db_cursor() as cur:
             cur.execute(
@@ -1244,14 +1317,29 @@ def vpn_show_server(token, chat_id, user_id, server_id, msg_id):
     ping_display = f"{ping_ms} мс" if ping_ms else "—"
     fav_display = "⭐ В избранном" if is_fav else "☆ Не в избранном"
 
+    if vpn_is_warp(server):
+        extra_info = (
+            f"💨 <b>Cloudflare WARP</b> — бесплатный VPN от Cloudflare.\n"
+            f"• Не требует регистрации\n"
+            f"• Не требует карты\n"
+            f"• Работает сразу\n"
+            f"• Скорость до 200 Мбит/с\n"
+            f"• Подходит для обхода блокировок\n\n"
+            f"⚠️ IP будет принадлежать Cloudflare."
+        )
+    else:
+        extra_info = (
+            f"📋 <b>Ваш конфиг будет сгенерирован при подключении.</b>\n\n"
+            f"📡 <b>Пинг:</b> {ping_display}\n"
+            f"🔗 <b>Хост:</b> <code>{server['host']}:{server['port']}</code>"
+        )
+
     text = (
         f"🌍 <b>{server.get('flag', '')} {server['country']}, {server['city']}</b>\n"
         f"{server.get('location', '')}\n\n"
         f"📊 <b>Статус:</b> {status}\n"
-        f"📶 <b>Пинг:</b> {ping_display}\n"
-        f"🔗 <b>Хост:</b> <code>{server['host']}:{server['port']}</code>\n"
         f"{fav_display}\n\n"
-        f"📋 <b>Ваш конфиг будет сгенерирован при подключении.</b>"
+        f"{extra_info}"
     )
 
     # Dynamic IP display
@@ -1263,7 +1351,8 @@ def vpn_show_server(token, chat_id, user_id, server_id, msg_id):
         action_row.append({"text": "🛑 Отключиться", "callback_data": "vpn_disconnect"})
     else:
         action_row.append({"text": "🔌 Подключиться", "callback_data": f"vpn_connect_{server_id}"})
-    action_row.append({"text": "⭐" if not is_fav else "⭐ Убрать", "callback_data": f"vpn_fav_{server_id}"})
+    if not vpn_is_warp(server):
+        action_row.append({"text": "⭐" if not is_fav else "⭐ Убрать", "callback_data": f"vpn_fav_{server_id}"})
 
     telegram_request(token, "editMessageText", {
         "chat_id": chat_id, "message_id": msg_id,
@@ -1300,21 +1389,36 @@ def vpn_connect_user(token, chat_id, user_id, server_id, msg_id):
         })
         return
 
+    if vpn_is_warp(server):
+        instructions = (
+            f"📱 <b>Как использовать WARP:</b>\n"
+            f"1. Установите приложение 1.1.1.1 (Cloudflare WARP)\n"
+            f"2. Или настройте WireGuard вручную:\n"
+            f"   • Установите WireGuard на своё устройство\n"
+            f"   • Создайте новый туннель и вставьте конфиг ниже\n"
+            f"   • Активируйте туннель\n\n"
+            f"⚡ <b>WARP</b> — полностью бесплатно, без ограничений по трафику\n"
+            f"Подходит для обхода блокировок и защиты конфиденциальности."
+        )
+    else:
+        instructions = (
+            f"📱 <b>Как использовать:</b>\n"
+            f"1. Установите WireGuard на своём устройстве\n"
+            f"2. Создайте новый туннель и вставьте этот конфиг\n"
+            f"3. Активируйте туннель\n\n"
+            f"⚡ Рекомендуемые клиенты:\n"
+            f"• <b>Windows/Mac/Linux:</b> WireGuard (wireguard.com)\n"
+            f"• <b>iOS:</b> WireGuard App Store\n"
+            f"• <b>Android:</b> WireGuard Google Play\n"
+            f"• <b>Windows (альт.):</b> Tunnelblick, Wintun\n\n"
+            f"⚠️ <b>Важно:</b> Файл конфигурации содержит ваш приватный ключ. "
+            f"Не передавайте его третьим лицам."
+        )
     text = (
         f"✅ <b>Подключение к {server.get('flag', '')} {server['country']}, {server['city']}</b>\n\n"
         f"📋 <b>Ваш конфигурационный файл WireGuard:</b>\n\n"
         f"<pre lang=\"ini\">{config}</pre>\n\n"
-        f"📱 <b>Как использовать:</b>\n"
-        f"1. Установите WireGuard на своём устройстве\n"
-        f"2. Создайте новый туннель и вставьте этот конфиг\n"
-        f"3. Активируйте туннель\n\n"
-        f"⚡ Рекомендуемые клиенты:\n"
-        f"• <b>Windows/Mac/Linux:</b> WireGuard (wireguard.com)\n"
-        f"• <b>iOS:</b> WireGuard App Store\n"
-        f"• <b>Android:</b> WireGuard Google Play\n"
-        f"• <b>Windows (альт.):</b> Tunnelblick, Wintun\n\n"
-        f"⚠️ <b>Важно:</b> Файл конфигурации содержит ваш приватный ключ. "
-        f"Не передавайте его третьим лицам."
+        f"{instructions}"
     )
 
     telegram_request(token, "editMessageText", {
@@ -1356,19 +1460,20 @@ def vpn_disconnect_user(token, chat_id, user_id, msg_id):
 
 
 def vpn_auto_select(servers):
-    """Auto-select best server based on ping."""
+    """Auto-select best server based on ping (skips WARP)."""
     best = None
     best_ping = float("inf")
     import random
-    # Shuffle to try different servers
-    shuffled = list(servers)
-    random.shuffle(shuffled)
-    for s in shuffled[:5]:
+    real = [s for s in servers if not vpn_is_warp(s)]
+    if not real:
+        return servers[0] if servers else None
+    random.shuffle(real)
+    for s in real[:5]:
         ping = vpn_ping_server(s["host"])
         if ping and ping < best_ping:
             best_ping = ping
             best = s
-    return best or (servers[0] if servers else None)
+    return best or real[0]
 
 
 def vpn_show_settings(token, chat_id, user_id, msg_id):
@@ -1378,16 +1483,17 @@ def vpn_show_settings(token, chat_id, user_id, msg_id):
         "🛡️ <b>Протокол:</b> WireGuard\n"
         "🔒 <b>Шифрование:</b> ChaCha20-Poly1305\n"
         "📡 <b>Туннель:</b> Полный (весь трафик)\n"
-        "📶 <b>MTU:</b> 1420\n"
+        "📶 <b>MTU:</b> 1420 (WARP: 1280)\n"
         "🌐 <b>DNS:</b> 1.1.1.1, 8.8.8.8\n\n"
-        "🔧 <b>Бесплатные платформы для серверов:</b>\n"
-        "• <b>Oracle Cloud Always Free</b> — 4 vCPU, 24GB RAM, 200GB SSD\n"
-        "• <b>Google Cloud Free Tier</b> — 1 e2-micro VM\n"
-        "• <b>AWS Free Tier</b> — 750ч/мес (12 мес)\n\n"
-        "📋 Для добавления своего сервера используйте:\n"
-        "<code>/vpn_addserver &lt;host&gt; &lt;страна&gt; &lt;город&gt; &lt;публичный_ключ&gt; &lt;endpoint&gt;</code>\n\n"
-        "💡 <b>Совет:</b> Для максимальной скорости выбирайте сервер "
-        "географически ближайший к вам."
+        "💨 <b>Cloudflare WARP</b> — встроенный бесплатный сервер\n"
+        "• Работает без карты и регистрации\n"
+        "• Высокая скорость (до 200 Мбит/с)\n\n"
+        "🔧 <b>Дополнительные серверы (для админа):</b>\n"
+        "Добавляются через /vpn_addserver\n"
+        "Бесплатные платформы:\n"
+        "• Oracle Cloud Always Free\n"
+        "• Google Cloud Free Tier\n\n"
+        "💡 <b>Совет:</b> WARP подходит для обхода блокировок сразу после установки."
     )
     telegram_request(token, "editMessageText", {
         "chat_id": chat_id, "message_id": msg_id,
