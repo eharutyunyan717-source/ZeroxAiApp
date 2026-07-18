@@ -1422,50 +1422,40 @@ def vpn_connect_user(token, chat_id, user_id, server_id, msg_id):
             f"⚠️ Конфиг содержит твой приватный ключ — никому не передавай"
         )
 
-    # Generate QR code URL for the config
-    import urllib.parse
-    config_encoded = urllib.parse.quote(config)
-    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={config_encoded}"
-
-    # Edit message to show card
+    # ── Send modern card ──
     telegram_request(token, "editMessageText", {
         "chat_id": chat_id, "message_id": msg_id,
         "text": card, "parse_mode": "HTML",
         "reply_markup": {
             "inline_keyboard": [
                 [{"text": "📎 Скачать .conf", "callback_data": f"vpn_dlconf_{server_id}"}],
-                [{"text": "📱 QR-код для телефона", "callback_data": f"vpn_qr_{server_id}"}],
+                [{"text": "📱 Приложение для телефона", "callback_data": f"vpn_qr_{server_id}"}],
                 [{"text": "🛑 Отключиться", "callback_data": "vpn_disconnect"}],
                 [{"text": "◀ К серверам", "callback_data": "vpn_main"}],
             ]
         },
     })
 
-    # Send QR code as a separate photo message
+    # Send mobile PWA app as a separate document
     try:
-        # Try to send QR code photo
-        qr_text = (
-            f"📱 <b>QR-код для WireGuard</b>\n\n"
-            f"{flag} <b>{country} · {city}</b>\n\n"
-            f"Как использовать:\n"
-            f"1. Установи WireGuard\n"
-            f"2. Нажми <b>➕</b> → <b>Сканировать QR</b>\n"
-            f"3. Наведи камеру на этот код\n\n"
-            f"🔒 Конфиг уже сохранён в боте"
-        )
-        telegram_request(token, "sendPhoto", {
-            "chat_id": chat_id,
-            "photo": qr_url,
-            "caption": qr_text,
-            "parse_mode": "HTML",
-            "reply_markup": {
-                "inline_keyboard": [
-                    [{"text": "🛑 Отключиться", "callback_data": "vpn_disconnect"}],
-                ]
-            },
-        })
+        app_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vpn_app", "mobile")
+        html_path = os.path.join(app_dir, "index.html")
+        if os.path.exists(html_path):
+            with open(html_path, "rb") as f:
+                html_bytes = f.read()
+            caption = (
+                f"📱 <b>ZeroxAI VPN — приложение для телефона</b>\n\n"
+                f"1. Сохраните этот файл на телефон\n"
+                f"2. Откройте в браузере\n"
+                f"3. Нажмите «Поделиться» → «На экран домой»\n"
+                f"4. Импортируйте .conf в приложении\n\n"
+                f"Или используйте QR-код выше для быстрого импорта"
+            )
+            telegram_upload(token, "sendDocument",
+                {"chat_id": str(chat_id), "caption": caption, "parse_mode": "HTML"},
+                "document", html_bytes, "zeroxai_vpn_mobile.html", "text/html")
     except Exception:
-        pass  # QR sending is optional
+        pass
 
 
 def vpn_disconnect_user(token, chat_id, user_id, msg_id):
@@ -3590,34 +3580,32 @@ def handle_callback_query(token, callback_query):
         return
 
     if data.startswith("vpn_qr_"):
-        sid = int(data.split("_")[-1])
-        cfg = vpn_get_user_config(user_id, sid)
-        if cfg and cfg.get("config_text"):
+        # Send mobile PWA app instead of QR code
+        app_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vpn_app", "mobile")
+        html_path = os.path.join(app_dir, "index.html")
+        if os.path.exists(html_path):
+            with open(html_path, "rb") as f:
+                html_bytes = f.read()
+            # Also embed the .conf content in the config list for easy import
+            sid = int(data.split("_")[-1])
+            cfg = vpn_get_user_config(user_id, sid)
             server = vpn_get_server(sid)
-            flag = server["flag"] if server else "🌍"
-            country = server["country"] if server else ""
-            city = server["city"] if server else ""
-            import urllib.parse
-            config_encoded = urllib.parse.quote(cfg["config_text"])
-            qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={config_encoded}"
-            qr_text = (
-                f"📱 <b>QR-код для WireGuard</b>\n\n"
-                f"{flag} <b>{country} · {city}</b>\n\n"
-                f"1. Установи WireGuard\n"
-                f"2. Нажми <b>➕</b> → <b>Сканировать QR</b>\n"
-                f"3. Наведи камеру на код\n\n"
-                f"⚡ Работает на iPhone, Android, Windows, Mac"
+            country = server["country"] if server else "VPN"
+            caption = (
+                f"📱 <b>ZeroxAI VPN — мобильное приложение</b>\n\n"
+                f"1. Сохраните этот HTML-файл на телефон\n"
+                f"2. Откройте его в браузере\n"
+                f"3. Нажмите «Поделиться» → «На экран домой»\n"
+                f"4. Импортируйте .conf файл в приложении\n\n"
+                f"Или просто откройте QR-код из бота после подключения"
             )
-            telegram_request(token, "sendPhoto", {
-                "chat_id": chat_id,
-                "photo": qr_url,
-                "caption": qr_text,
-                "parse_mode": "HTML",
-            })
+            telegram_upload(token, "sendDocument",
+                {"chat_id": str(chat_id), "caption": caption, "parse_mode": "HTML"},
+                "document", html_bytes, "zeroxai_vpn_mobile.html", "text/html")
         else:
             telegram_request(token, "answerCallbackQuery", {
                 "callback_query_id": cq_id,
-                "text": "❌ Сначала подключитесь к серверу",
+                "text": "❌ Файл приложения не найден",
                 "show_alert": True,
             })
         return
