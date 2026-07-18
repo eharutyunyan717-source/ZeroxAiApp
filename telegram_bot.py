@@ -1367,7 +1367,7 @@ def vpn_show_server(token, chat_id, user_id, server_id, msg_id):
 
 
 def vpn_connect_user(token, chat_id, user_id, server_id, msg_id):
-    """Connect user to a VPN server and show config."""
+    """Connect user to a VPN server — show modern config card with QR + download."""
     server = vpn_get_server(server_id)
     if not server:
         telegram_request(token, "editMessageText", {
@@ -1376,10 +1376,7 @@ def vpn_connect_user(token, chat_id, user_id, server_id, msg_id):
         })
         return
 
-    # Deactivate any existing config
     vpn_deactivate_config(user_id)
-
-    # Create config
     config = vpn_create_user_config(user_id, server)
     if not config:
         telegram_request(token, "editMessageText", {
@@ -1389,49 +1386,86 @@ def vpn_connect_user(token, chat_id, user_id, server_id, msg_id):
         })
         return
 
-    if vpn_is_warp(server):
-        instructions = (
-            f"📱 <b>Как использовать WARP:</b>\n"
-            f"1. Установите приложение 1.1.1.1 (Cloudflare WARP)\n"
-            f"2. Или настройте WireGuard вручную:\n"
-            f"   • Установите WireGuard на своё устройство\n"
-            f"   • Создайте новый туннель и вставьте конфиг ниже\n"
-            f"   • Активируйте туннель\n\n"
-            f"⚡ <b>WARP</b> — полностью бесплатно, без ограничений по трафику\n"
-            f"Подходит для обхода блокировок и защиты конфиденциальности."
-        )
-    else:
-        instructions = (
-            f"📱 <b>Как использовать:</b>\n"
-            f"1. Установите WireGuard на своём устройстве\n"
-            f"2. Создайте новый туннель и вставьте этот конфиг\n"
-            f"3. Активируйте туннель\n\n"
-            f"⚡ Рекомендуемые клиенты:\n"
-            f"• <b>Windows/Mac/Linux:</b> WireGuard (wireguard.com)\n"
-            f"• <b>iOS:</b> WireGuard App Store\n"
-            f"• <b>Android:</b> WireGuard Google Play\n"
-            f"• <b>Windows (альт.):</b> Tunnelblick, Wintun\n\n"
-            f"⚠️ <b>Важно:</b> Файл конфигурации содержит ваш приватный ключ. "
-            f"Не передавайте его третьим лицам."
-        )
-    text = (
-        f"✅ <b>Подключение к {server.get('flag', '')} {server['country']}, {server['city']}</b>\n\n"
-        f"📋 <b>Ваш конфигурационный файл WireGuard:</b>\n\n"
+    flag = server.get("flag", "🌍")
+    country = server["country"]
+    city = server["city"]
+    is_warp = vpn_is_warp(server)
+
+    # ── Beautiful modern card ──
+    header = f"╔══════════════════════════╗\n{'WARP' if is_warp else 'VPN'} • {flag} {country} {city}\n╚══════════════════════════╝"
+    card = (
+        f"<b>━━━━━━━━━━━━━━━━━━━━</b>\n"
+        f"<b>{flag}  {country} · {city}</b>\n"
+        f"<b>━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+
+        f"📋 <b>Конфигурация WireGuard</b>\n"
         f"<pre lang=\"ini\">{config}</pre>\n\n"
-        f"{instructions}"
+
+        f"<b>━━━━━━━━━━━━━━━━━━━━</b>\n"
+        f"📱 <b>Как подключиться</b>\n"
     )
 
+    if is_warp:
+        card += (
+            f"1. Скачай <b>WireGuard</b> (App Store / Google Play)\n"
+            f"2. Нажми <b>➕</b> → <b>Импорт из буфера</b>\n"
+            f"3. Скопируй конфиг выше и вставь\n"
+            f"4. Нажми <b>🔌 Активировать</b>\n\n"
+            f"⚡ <b>WARP</b> — бесплатно, безлимитно, без регистрации"
+        )
+    else:
+        card += (
+            f"1. Скачай <b>WireGuard</b> (wireguard.com)\n"
+            f"2. Создай новый туннель\n"
+            f"3. Скопируй конфиг выше\n"
+            f"4. Активируй 🚀\n\n"
+            f"⚠️ Конфиг содержит твой приватный ключ — никому не передавай"
+        )
+
+    # Generate QR code URL for the config
+    import urllib.parse
+    config_encoded = urllib.parse.quote(config)
+    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={config_encoded}"
+
+    # Edit message to show card
     telegram_request(token, "editMessageText", {
         "chat_id": chat_id, "message_id": msg_id,
-        "text": text, "parse_mode": "HTML",
+        "text": card, "parse_mode": "HTML",
         "reply_markup": {
             "inline_keyboard": [
                 [{"text": "📎 Скачать .conf", "callback_data": f"vpn_dlconf_{server_id}"}],
+                [{"text": "📱 QR-код для телефона", "callback_data": f"vpn_qr_{server_id}"}],
                 [{"text": "🛑 Отключиться", "callback_data": "vpn_disconnect"}],
                 [{"text": "◀ К серверам", "callback_data": "vpn_main"}],
             ]
         },
     })
+
+    # Send QR code as a separate photo message
+    try:
+        # Try to send QR code photo
+        qr_text = (
+            f"📱 <b>QR-код для WireGuard</b>\n\n"
+            f"{flag} <b>{country} · {city}</b>\n\n"
+            f"Как использовать:\n"
+            f"1. Установи WireGuard\n"
+            f"2. Нажми <b>➕</b> → <b>Сканировать QR</b>\n"
+            f"3. Наведи камеру на этот код\n\n"
+            f"🔒 Конфиг уже сохранён в боте"
+        )
+        telegram_request(token, "sendPhoto", {
+            "chat_id": chat_id,
+            "photo": qr_url,
+            "caption": qr_text,
+            "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [{"text": "🛑 Отключиться", "callback_data": "vpn_disconnect"}],
+                ]
+            },
+        })
+    except Exception:
+        pass  # QR sending is optional
 
 
 def vpn_disconnect_user(token, chat_id, user_id, msg_id):
@@ -3535,30 +3569,57 @@ def handle_callback_query(token, callback_query):
         if cfg and cfg.get("config_text"):
             server = vpn_get_server(sid)
             country = server["country"] if server else "?"
-            city = server["city"] if server else "?"
-            flag = server["flag"] if server else "🌍"
-            text = (
-                f"📁 <b>Конфиг WireGuard — {flag} {country}, {city}</b>\n\n"
-                f"Сохраните этот текст в файл <code>zeroxai_vpn_{sid}.conf</code> "
-                f"и импортируйте в WireGuard клиент.\n\n"
-                f"<pre lang=\"ini\">{cfg['config_text']}</pre>"
+            fname = f"zeroxai_vpn_{country.lower()}.conf"
+            telegram_upload(token, "sendDocument",
+                {"chat_id": str(chat_id), "caption": f"📁 {country} · WireGuard config"},
+                "document", cfg["config_text"].encode("utf-8"), fname, "text/plain",
             )
-            telegram_request(token, "editMessageText", {
-                "chat_id": chat_id, "message_id": msg_id,
-                "text": text, "parse_mode": "HTML",
-                "reply_markup": {"inline_keyboard": [
-                    [{"text": "◀ Назад", "callback_data": f"vpn_server_{sid}"}],
-                ]},
+            telegram_request(token, "answerCallbackQuery", {
+                "callback_query_id": cq_id,
+                "text": f"✅ Файл {fname} отправлен!",
             })
         else:
-            telegram_request(token, "editMessageText", {
-                "chat_id": chat_id, "message_id": msg_id,
-                "text": "❌ Конфиг не найден. Подключитесь к серверу сначала.",
-                "reply_markup": {"inline_keyboard": [[{"text": "◀ Назад", "callback_data": "vpn_main"}]]},
+            telegram_request(token, "answerCallbackQuery", {
+                "callback_query_id": cq_id,
+                "text": "❌ Сначала подключитесь к серверу",
+                "show_alert": True,
             })
         return
     if data == "vpn_noop":
         telegram_request(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": ""})
+        return
+
+    if data.startswith("vpn_qr_"):
+        sid = int(data.split("_")[-1])
+        cfg = vpn_get_user_config(user_id, sid)
+        if cfg and cfg.get("config_text"):
+            server = vpn_get_server(sid)
+            flag = server["flag"] if server else "🌍"
+            country = server["country"] if server else ""
+            city = server["city"] if server else ""
+            import urllib.parse
+            config_encoded = urllib.parse.quote(cfg["config_text"])
+            qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={config_encoded}"
+            qr_text = (
+                f"📱 <b>QR-код для WireGuard</b>\n\n"
+                f"{flag} <b>{country} · {city}</b>\n\n"
+                f"1. Установи WireGuard\n"
+                f"2. Нажми <b>➕</b> → <b>Сканировать QR</b>\n"
+                f"3. Наведи камеру на код\n\n"
+                f"⚡ Работает на iPhone, Android, Windows, Mac"
+            )
+            telegram_request(token, "sendPhoto", {
+                "chat_id": chat_id,
+                "photo": qr_url,
+                "caption": qr_text,
+                "parse_mode": "HTML",
+            })
+        else:
+            telegram_request(token, "answerCallbackQuery", {
+                "callback_query_id": cq_id,
+                "text": "❌ Сначала подключитесь к серверу",
+                "show_alert": True,
+            })
         return
 
     if data == "menu_pro":
