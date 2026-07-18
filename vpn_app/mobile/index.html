@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#ffffff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>ZeroxAI VPN</title>
+<link rel="manifest" href="manifest.json">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #FFFFFF;
+    color: #000000;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 20px;
+  }
+  .container { max-width: 420px; width: 100%; }
+
+  /* Header */
+  .header { margin-bottom: 28px; animation: fadeIn 0.6s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
+  .header h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; }
+  .header p { color: #6B7280; font-size: 14px; margin-top: 4px; }
+
+  /* Status Card */
+  .card {
+    background: #F3F4F6;
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 20px;
+    transition: all 0.4s ease;
+    animation: slideUp 0.5s ease;
+  }
+  @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+  .status-dot {
+    width: 14px; height: 14px; border-radius: 50%;
+    margin: 0 auto 12px;
+    transition: background 0.4s ease;
+    animation: pulse 2s infinite;
+  }
+  .status-dot.disconnected { background: #DC2626; animation: none; }
+  .status-dot.connecting { background: #2563EB; }
+  .status-dot.connected { background: #16A34A; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4); }
+    50% { box-shadow: 0 0 0 10px rgba(37, 99, 235, 0); }
+  }
+  .status-text { text-align: center; font-size: 18px; font-weight: 700; }
+  .status-text.disconnected { color: #DC2626; }
+  .status-text.connected { color: #16A34A; }
+  .status-text.connecting { color: #2563EB; }
+  .status-ip { text-align: center; color: #6B7280; font-size: 13px; margin-top: 6px; }
+  .status-server { text-align: center; color: #9CA3AF; font-size: 12px; margin-top: 2px; }
+
+  /* Buttons */
+  .btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; padding: 16px; border: none; border-radius: 14px;
+    font-size: 16px; font-weight: 600; cursor: pointer;
+    transition: all 0.25s ease; position: relative; overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .btn:active { transform: scale(0.97); }
+  .btn-primary { background: #2563EB; color: white; }
+  .btn-primary:hover { background: #1D4ED8; }
+  .btn-danger { background: #DC2626; color: white; }
+  .btn-danger:hover { background: #B91C1C; }
+  .btn-secondary { background: #F3F4F6; color: #000; }
+  .btn-secondary:hover { background: #E5E7EB; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+  /* Config List */
+  .config-list { animation: fadeIn 0.7s ease; margin-top: 8px; }
+  .config-list h3 { font-size: 16px; margin-bottom: 12px; }
+  .config-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 16px; background: #F9FAFB; border-radius: 12px;
+    margin-bottom: 8px; cursor: pointer; transition: all 0.2s;
+    border: 1.5px solid transparent;
+  }
+  .config-item:active { background: #F3F4F6; border-color: #2563EB; }
+  .config-item.active { border-color: #2563EB; background: #EFF6FF; }
+  .config-flag { font-size: 24px; }
+  .config-name { font-weight: 600; color: #000; flex: 1; }
+  .config-check { color: #16A34A; font-size: 18px; display: none; }
+  .config-item.active .config-check { display: block; }
+
+  /* Import Button */
+  .import-area {
+    border: 2px dashed #D1D5DB; border-radius: 14px; padding: 24px;
+    text-align: center; cursor: pointer; transition: all 0.3s;
+    margin-bottom: 12px;
+  }
+  .import-area:active { border-color: #2563EB; background: #F9FAFB; }
+  .import-area span { font-size: 32px; display: block; margin-bottom: 8px; }
+  .import-area p { color: #6B7280; font-size: 13px; }
+
+  /* QR Section */
+  .qr-section { display: none; margin-top: 16px; text-align: center; animation: fadeIn 0.5s ease; }
+  .qr-section.show { display: block; }
+  .qr-section img { width: 220px; height: 220px; border-radius: 12px; margin: 10px auto; display: block; }
+  .qr-section p { color: #6B7280; font-size: 12px; margin-top: 8px; }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+    background: #000; color: #fff; padding: 12px 24px; border-radius: 12px;
+    font-size: 14px; font-weight: 500; z-index: 100;
+    animation: toastIn 0.3s ease; pointer-events: none;
+  }
+  @keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(20px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+
+  /* Loading spinner */
+  .spinner { display: none; width: 20px; height: 20px; border: 3px solid rgba(255,255,255,0.3);
+    border-top-color: white; border-radius: 50%; animation: spin 0.6s linear infinite; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .btn.loading .spinner { display: inline-block; }
+  .btn.loading .btn-text { display: none; }
+
+  /* Ripple */
+  .ripple { position: absolute; border-radius: 50%; background: rgba(255,255,255,0.3);
+    transform: scale(0); animation: ripple 0.6s ease-out; pointer-events: none; }
+  @keyframes ripple { to { transform: scale(4); opacity: 0; } }
+
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Header -->
+  <div class="header">
+    <h1>ZeroxAI</h1>
+    <p>VPN Client</p>
+  </div>
+
+  <!-- Status Card -->
+  <div class="card">
+    <div class="status-dot disconnected" id="statusDot"></div>
+    <div class="status-text disconnected" id="statusText">Отключено</div>
+    <div class="status-ip" id="statusIp">IP: загрузка...</div>
+    <div class="status-server" id="statusServer"></div>
+  </div>
+
+  <!-- Connect Button -->
+  <button class="btn btn-primary" id="connectBtn" onclick="toggleConnect()">
+    <div class="spinner" id="connectSpinner"></div>
+    <span class="btn-text" id="connectText">Подключиться</span>
+  </button>
+
+  <!-- Config List -->
+  <div class="config-list">
+    <h3>Конфигурации</h3>
+    <div id="configList"></div>
+    <div class="import-area" onclick="importConfig()" id="importArea">
+      <span>📂</span>
+      <p>Нажмите, чтобы импортировать .conf файл</p>
+    </div>
+  </div>
+
+  <!-- QR Section -->
+  <div class="qr-section" id="qrSection">
+    <div style="font-size:14px;font-weight:600;margin-bottom:4px;">📱 QR-код для телефона</div>
+    <img id="qrImage" src="" alt="QR Code">
+    <p>Отсканируйте камерой телефона — WireGuard сам подхватит конфиг</p>
+  </div>
+</div>
+
+<script>
+const STORAGE_KEY = 'zeroxai_vpn_configs';
+let configs = [];
+let activeConfig = null;
+let connected = false;
+
+// Load saved configs
+try {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) configs = JSON.parse(saved);
+} catch(e) {}
+
+function getPublicIP() {
+  const services = ['https://api.ipify.org', 'https://icanhazip.com', 'https://checkip.amazonaws.com'];
+  (async function check(i) {
+    if (i >= services.length) return;
+    try {
+      const r = await fetch(services[i], { cache: 'no-store' });
+      const ip = (await r.text()).trim();
+      if (ip) document.getElementById('statusIp').textContent = `IP: ${ip}`;
+    } catch(e) { check(i+1); }
+  })(0);
+}
+getPublicIP();
+
+function renderConfigs() {
+  const el = document.getElementById('configList');
+  el.innerHTML = '';
+  configs.forEach((cfg, i) => {
+    const div = document.createElement('div');
+    div.className = 'config-item' + (activeConfig === i ? ' active' : '');
+    div.innerHTML = `
+      <div class="config-flag">${cfg.flag || '🌍'}</div>
+      <div class="config-name">${cfg.name || cfg.country || 'Без имени'}</div>
+      <div class="config-check">✓</div>
+    `;
+    div.onclick = () => selectConfig(i);
+    el.appendChild(div);
+  });
+  document.getElementById('importArea').style.display = configs.length > 0 ? 'block' : 'block';
+}
+
+function selectConfig(i) {
+  activeConfig = i;
+  renderConfigs();
+  saveConfigs();
+  showToast('✅ Конфиг выбран');
+}
+
+function saveConfigs() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(configs)); } catch(e) {}
+}
+
+async function importConfig() {
+  // Create hidden file input
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.conf,.txt,text/plain';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const content = await file.text();
+      const name = file.name.replace('.conf', '');
+      const cfg = { name, content, flag: '🌍', country: name.replace(/zeroxai_vpn_/gi, '').replace(/_/g, ' ').trim() };
+      configs.push(cfg);
+      activeConfig = configs.length - 1;
+      renderConfigs();
+      saveConfigs();
+      showToast('✅ Конфиг импортирован');
+    } catch(e) { showToast('❌ Ошибка чтения файла'); }
+  };
+  input.click();
+}
+
+function toggleConnect() {
+  if (connected) { disconnect(); return; }
+  if (activeConfig === null && configs.length > 0) { activeConfig = 0; renderConfigs(); }
+  if (activeConfig === null) {
+    showToast('📂 Сначала импортируйте .conf файл');
+    return;
+  }
+  connect();
+}
+
+function connect() {
+  connected = true;
+  const dot = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  const btn = document.getElementById('connectBtn');
+  const server = document.getElementById('statusServer');
+
+  dot.className = 'status-dot connecting';
+  text.className = 'status-text connecting';
+  text.textContent = 'Подключение...';
+  btn.className = 'btn btn-danger';
+  document.getElementById('connectText').textContent = 'Отключиться';
+  document.getElementById('connectSpinner').style.display = 'none';
+
+  const cfg = configs[activeConfig];
+  server.textContent = `${cfg.flag || '🌍'} ${cfg.country || cfg.name || ''}`;
+
+  // Trigger download of .conf file
+  const blob = new Blob([cfg.content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${cfg.country || 'zeroxai'}.conf`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  // Show QR
+  showQR(cfg.content);
+
+  setTimeout(() => {
+    dot.className = 'status-dot connected';
+    text.className = 'status-text connected';
+    text.textContent = 'Подключено ✓';
+    showToast('✅ VPN подключён');
+    getPublicIP();
+  }, 800);
+}
+
+function disconnect() {
+  connected = false;
+  document.getElementById('statusDot').className = 'status-dot disconnected';
+  document.getElementById('statusText').className = 'status-text disconnected';
+  document.getElementById('statusText').textContent = 'Отключено';
+  document.getElementById('connectBtn').className = 'btn btn-primary';
+  document.getElementById('connectText').textContent = 'Подключиться';
+  document.getElementById('statusServer').textContent = '';
+  document.getElementById('qrSection').className = 'qr-section';
+  showToast('🛑 VPN отключён');
+  getPublicIP();
+}
+
+function showQR(content) {
+  const section = document.getElementById('qrSection');
+  section.className = 'qr-section show';
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(content)}`;
+  document.getElementById('qrImage').src = qrUrl;
+}
+
+let toastTimer;
+function showToast(msg) {
+  clearTimeout(toastTimer);
+  const old = document.querySelector('.toast');
+  if (old) old.remove();
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  toastTimer = setTimeout(() => t.remove(), 2200);
+}
+
+// Add ripple effect
+document.querySelectorAll('.btn, .config-item, .import-area').forEach(el => {
+  el.addEventListener('click', function(e) {
+    const ripple = document.createElement('span');
+    ripple.className = 'ripple';
+    const rect = this.getBoundingClientRect();
+    ripple.style.width = ripple.style.height = Math.max(rect.width, rect.height) + 'px';
+    ripple.style.left = (e.clientX - rect.left - parseInt(ripple.style.width)/2) + 'px';
+    ripple.style.top = (e.clientY - rect.top - parseInt(ripple.style.height)/2) + 'px';
+    this.appendChild(ripple);
+    setTimeout(() => ripple.remove(), 600);
+  });
+});
+
+renderConfigs();
+if (configs.length > 0) activeConfig = 0;
+renderConfigs();
+</script>
+</body>
+</html>

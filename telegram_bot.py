@@ -3722,7 +3722,7 @@ KNOWN_COMMANDS = {
     "/giveall", "/addcoin", "/testshop", "/logs", "/setsub",
     "/setlocalmodel", "/trainmodel",
     "/project",
-    "/vpn", "/vpn_addserver", "/vpn_delserver", "/vpn_servers",
+    "/vpn", "/vpn_addserver", "/vpn_delserver", "/vpn_servers", "/vpn_app",
 }
 
 def should_respond(message):
@@ -4058,6 +4058,41 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                 # Split if too long
                 for part in split_message(text):
                     reply(part, parse_mode="HTML")
+                return True
+
+            if cmd == "/vpn_app":
+                if not args:
+                    reply(
+                        "📱 <b>ZeroxAI VPN — приложения</b>\n\n"
+                        "🪟 <b>Windows:</b> /vpn_app exe\n"
+                        "📱 <b>Телефон (PWA):</b> /vpn_app mobile\n\n"
+                        "Приложение имеет белый/чёрный дизайн, "
+                        "анимации и автоматически открывает WireGuard.",
+                        parse_mode="HTML"
+                    )
+                    return True
+                if args[0] == "exe":
+                    exe_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vpn_app", "dist", "ZeroxAI_VPN.exe")
+                    if os.path.exists(exe_path):
+                        with open(exe_path, "rb") as f:
+                            exe_bytes = f.read()
+                        telegram_upload(token, "sendDocument",
+                            {"chat_id": str(chat_id), "caption": "🪟 ZeroxAI VPN — Windows приложение"},
+                            "document", exe_bytes, "ZeroxAI_VPN.exe", "application/x-msdownload")
+                    else:
+                        reply("❌ Файл не найден на сервере.")
+                elif args[0] == "mobile":
+                    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vpn_app", "mobile", "index.html")
+                    if os.path.exists(html_path):
+                        with open(html_path, "rb") as f:
+                            html_bytes = f.read()
+                        telegram_upload(token, "sendDocument",
+                            {"chat_id": str(chat_id), "caption": "📱 ZeroxAI VPN — откройте в браузере и установите на экран домой"},
+                            "document", html_bytes, "zeroxai_vpn_mobile.html", "text/html")
+                    else:
+                        reply("❌ Файл не найден на сервере.")
+                else:
+                    reply("Использование: /vpn_app exe — Windows .exe\n/vpn_app mobile — HTML для телефона")
                 return True
 
             if cmd == "/hide":
@@ -6595,6 +6630,7 @@ def main():
                         {"command": "buypro", "description": "Купить Pro"},
                         {"command": "project", "description": "Создать ZIP-проект"},
                         {"command": "vpn", "description": "🌍 VPN — безопасное подключение"},
+                        {"command": "vpn_app", "description": "📱 Скачать приложение VPN"},
                         {"command": "roles", "description": "Состав по ролям"},
                         {"command": "about", "description": "О боте"},
                         {"command": "commands", "description": "Все команды"},
