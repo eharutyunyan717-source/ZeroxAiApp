@@ -4072,7 +4072,7 @@ def handle_command(token, message, chat, user, chat_id, user_id, text):
                     )
                     return True
                 if args[0] == "exe":
-                    exe_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vpn_app", "dist", "ZeroxAI_VPN.exe")
+                    exe_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vpn_app", "release", "ZeroxAI_VPN.exe")
                     if os.path.exists(exe_path):
                         with open(exe_path, "rb") as f:
                             exe_bytes = f.read()
